@@ -31,7 +31,10 @@
   "flow",
   "flow_cta",
   "column_break_flow",
+  "flow_action",
   "flow_screen",
+  "flow_initial_data",
+  "flow_action_payload",
   "flow_token",
   "section_break_flow_response",
   "flow_response",
@@ -244,11 +247,34 @@
    "fieldtype": "Column Break"
   },
   {
+   "default": "navigate",
+   "depends_on": "eval:doc.content_type=='flow'",
+   "description": "Use navigate for client-rendered Flows or data_exchange to initialize through a Flow endpoint",
+   "fieldname": "flow_action",
+   "fieldtype": "Select",
+   "label": "Flow Action",
+   "options": "navigate\ndata_exchange"
+  },
+  {
    "depends_on": "eval:doc.content_type=='flow'",
    "description": "Starting screen ID (optional)",
    "fieldname": "flow_screen",
    "fieldtype": "Data",
    "label": "Flow Screen"
+  },
+  {
+   "depends_on": "eval:doc.content_type=='flow'",
+   "description": "Initial values passed under flow_action_payload.data",
+   "fieldname": "flow_initial_data",
+   "fieldtype": "JSON",
+   "label": "Initial Flow Data"
+  },
+  {
+   "depends_on": "eval:doc.content_type=='flow'",
+   "description": "Optional complete flow_action_payload object. Flow Screen and Initial Flow Data override matching values when set.",
+   "fieldname": "flow_action_payload",
+   "fieldtype": "JSON",
+   "label": "Flow Action Payload"
   },
   {
    "depends_on": "eval:doc.content_type=='flow'",

@@ -141,6 +141,7 @@ Build interactive forms using WhatsApp's native Flow Builder. Flows provide a ri
 - Client-only flows (no endpoint required)
 - Publish and manage flows directly from Frappe
 - Send flow messages and receive responses via webhook
+- Launch with `navigate` (default) or `data_exchange`, including an initial screen and JSON data
 
 **Supported Field Types:**
 - TextInput, TextArea
@@ -162,6 +163,7 @@ Build interactive forms using WhatsApp's native Flow Builder. Flows provide a ri
 - Add rows under **Screen Routes** to route a screen conditionally. Use Meta expressions such as `${form.selection} == 'option_a'` and add one default route per branching screen.
 - Choose **Raw JSON** authoring mode to preserve and edit Flow features that are not represented by the structured tables.
 - Set **Available On** to all phone numbers in the Flow's WABA or select an explicit set of WhatsApp Accounts/phone numbers. The same restriction is enforced when sending.
+- On a Flow message, use **Flow Action**, **Flow Screen**, and **Initial Flow Data** for dynamic launches. **Flow Action Payload** accepts the complete Meta payload when additional keys are needed.
 
 ### Sync from Meta
 

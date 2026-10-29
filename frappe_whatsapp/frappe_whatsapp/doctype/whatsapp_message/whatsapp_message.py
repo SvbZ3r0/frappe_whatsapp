@@ -50,6 +50,41 @@ class WhatsAppMessage(Document):
             else:
                 self.whatsapp_account = default_whatsapp_account.name
 
+    @staticmethod
+    def parse_flow_json_object(value, label):
+        """Parse an optional JSON field and require an object value."""
+        if not value:
+            return {}
+        try:
+            parsed = frappe.parse_json(value) if isinstance(value, str) else value
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            frappe.throw(_("{0} contains invalid JSON: {1}").format(label, str(exc)))
+        if not isinstance(parsed, dict):
+            frappe.throw(_("{0} must be a JSON object").format(label))
+        return dict(parsed)
+
+    def build_flow_action_payload(self, default_screen):
+        """Merge the advanced payload with convenient screen/data fields."""
+        payload = self.parse_flow_json_object(
+            self.flow_action_payload, _("Flow Action Payload")
+        )
+        initial_data = self.parse_flow_json_object(
+            self.flow_initial_data, _("Initial Flow Data")
+        )
+
+        screen = self.flow_screen or payload.get("screen") or default_screen
+        if screen:
+            payload["screen"] = screen
+
+        if "data" in payload and not isinstance(payload["data"], dict):
+            frappe.throw(_("Flow Action Payload data must be a JSON object"))
+        if initial_data:
+            payload_data = dict(payload.get("data") or {})
+            payload_data.update(initial_data)
+            payload["data"] = payload_data
+
+        return payload
+
     """Send whats app messages."""
     def before_insert(self):
         """Send message."""
@@ -160,14 +195,20 @@ class WhatsAppMessage(Document):
                     flow_mode = "draft"
                     frappe.msgprint(_("Sending flow in draft mode (for testing only)"), indicator="orange")
 
-                # Get first screen if not specified
-                flow_screen = self.flow_screen
-                if not flow_screen and flow_doc.screens:
-                    flow_screen = flow_doc.screens[0].screen_id
-                if not flow_screen and flow_doc.authoring_mode == "Raw JSON":
+                # Get a default first screen. An explicit payload or Flow Screen
+                # may override this when the launch payload is built.
+                default_flow_screen = None
+                if flow_doc.screens:
+                    default_flow_screen = flow_doc.screens[0].screen_id
+                if not default_flow_screen and flow_doc.authoring_mode == "Raw JSON":
                     raw_screens = flow_doc.get_raw_flow_json().get("screens", [])
                     if raw_screens:
-                        flow_screen = raw_screens[0].get("id")
+                        default_flow_screen = raw_screens[0].get("id")
+
+                flow_action = self.flow_action or "navigate"
+                if flow_action not in ("navigate", "data_exchange"):
+                    frappe.throw(_("Flow Action must be navigate or data_exchange"))
+                flow_action_payload = self.build_flow_action_payload(default_flow_screen)
 
                 data["type"] = "interactive"
                 data["interactive"] = {
@@ -179,10 +220,8 @@ class WhatsAppMessage(Document):
                             "flow_message_version": "3",
                             "flow_id": flow_doc.flow_id,
                             "flow_cta": self.flow_cta or flow_doc.flow_cta or "Open",
-                            "flow_action": "navigate",
-                            "flow_action_payload": {
-                                "screen": flow_screen
-                            }
+                            "flow_action": flow_action,
+                            "flow_action_payload": flow_action_payload
                         }
                     }
                 }

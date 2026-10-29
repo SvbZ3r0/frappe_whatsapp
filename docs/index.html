@@ -1169,6 +1169,7 @@ message.insert()</code></pre>
                 <li>Client-only flows (no endpoint required)</li>
                 <li>Publish and manage flows directly from Frappe</li>
                 <li>Send flow messages and receive responses via webhook</li>
+                <li>Launch with <code>navigate</code> or <code>data_exchange</code> and optional initial JSON data</li>
             </ul>
 
             <h3>Creating a Flow</h3>
@@ -1183,6 +1184,7 @@ message.insert()</code></pre>
             </ol>
 
             <p>Route conditions use Meta expressions such as <code>${form.customer_type} == 'business'</code>. Use <strong>Raw JSON</strong> authoring mode for advanced Meta components that are not represented by the structured tables. The <strong>Available On</strong> setting can expose a Flow to every configured phone number in its WABA or only selected numbers.</p>
+            <p>Outgoing Flow messages default to <code>navigate</code>. Choose <code>data_exchange</code> and set a Flow Screen, Initial Flow Data, or the complete Flow Action Payload for endpoint-backed initialization.</p>
 
             <h3>Supported Field Types</h3>
             <table>

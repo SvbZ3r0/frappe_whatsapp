@@ -147,12 +147,59 @@ class TestWhatsAppMessage(IntegrationTestCase):
         doc.insert(ignore_permissions=True)
 
         sent_data = json.loads(mock_post.call_args.kwargs["data"])
-        sent_token = sent_data["interactive"]["action"]["parameters"]["flow_token"]
+        parameters = sent_data["interactive"]["action"]["parameters"]
+        self.assertEqual(parameters["flow_action"], "navigate")
+        self.assertEqual(parameters["flow_action_payload"], {"screen": "START"})
+        sent_token = parameters["flow_token"]
         self.assertTrue(sent_token)
         self.assertEqual(doc.flow_token, sent_token)
         self.assertEqual(
             frappe.db.get_value("WhatsApp Message", doc.name, "flow_token"), sent_token
         )
+
+    @patch("frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_message.whatsapp_message.make_post_request")
+    def test_outgoing_flow_supports_data_exchange_launch(self, mock_post):
+        """Flow launches can send an initial screen, data, and custom payload."""
+        mock_post.return_value = {"messages": [{"id": "wamid.test_flow_dynamic_1"}]}
+        flow = frappe.get_doc({
+            "doctype": "WhatsApp Flow",
+            "flow_name": "Test WA Message Flow",
+            "whatsapp_account": "Test WA Msg Account",
+            "status": "Published",
+            "category": "OTHER",
+            "screens": [{
+                "screen_id": "START",
+                "screen_title": "Start",
+                "terminal": 1,
+            }],
+            "fields": [],
+        }).insert(ignore_permissions=True)
+        flow.db_set("flow_id", "test_meta_flow_id")
+
+        doc = frappe.get_doc({
+            "doctype": "WhatsApp Message",
+            "type": "Outgoing",
+            "to": "15555550103",
+            "message": "Open form",
+            "message_type": "Manual",
+            "content_type": "flow",
+            "flow": flow.name,
+            "flow_action": "data_exchange",
+            "flow_screen": "DETAILS",
+            "flow_initial_data": json.dumps({"request_type": "standard"}),
+            "flow_action_payload": json.dumps({"tracking": "campaign-1"}),
+            "whatsapp_account": "Test WA Msg Account",
+        })
+        doc.insert(ignore_permissions=True)
+
+        sent_data = json.loads(mock_post.call_args.kwargs["data"])
+        parameters = sent_data["interactive"]["action"]["parameters"]
+        self.assertEqual(parameters["flow_action"], "data_exchange")
+        self.assertEqual(parameters["flow_action_payload"], {
+            "screen": "DETAILS",
+            "data": {"request_type": "standard"},
+            "tracking": "campaign-1",
+        })
 
     @patch("frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_message.whatsapp_message.make_post_request")
     def test_outgoing_text_message_with_plus_number(self, mock_post):
