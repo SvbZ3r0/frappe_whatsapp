@@ -566,7 +566,7 @@ class TestFlowEndpoint(FrappeTestCase):
         )
 
         account = frappe._dict(name="Test Account")
-        flow = frappe._dict(name="Example Registration")
+        flow = frappe._dict(name="Example Registration", handler_key="example_handler")
         decrypted = {
             "action": "data_exchange",
             "screen": "DETAILS",
@@ -579,10 +579,13 @@ class TestFlowEndpoint(FrappeTestCase):
             "data": {"received": received["data"]["request_type"]},
         }
 
-        with patch("frappe.get_hooks", return_value=["test_app.flow_handler"]), patch(
+        with patch(
+            "frappe.get_hooks",
+            return_value={"example_handler": ["test_app.flow_handler"]},
+        ), patch(
             "frappe.get_attr", return_value=handler
-        ):
-            response = dispatch_data_exchange(context)
+        ) as get_attr:
+            response = dispatch_data_exchange(context, flow)
 
         self.assertEqual(
             context,
@@ -599,6 +602,49 @@ class TestFlowEndpoint(FrappeTestCase):
             response,
             {"screen": "SUMMARY", "data": {"received": "standard"}},
         )
+        get_attr.assert_called_once_with("test_app.flow_handler")
+
+    def test_handler_dispatch_fails_closed_for_unknown_or_duplicate_key(self):
+        from frappe_whatsapp.frappe_whatsapp.api.flow_endpoint import (
+            FlowProtocolError,
+            dispatch_data_exchange,
+        )
+
+        context = {
+            "flow": "Example Registration",
+            "whatsapp_account": "Test Account",
+            "action": "data_exchange",
+            "screen": "DETAILS",
+            "flow_token": "token-1",
+            "data": {},
+        }
+        flow = frappe._dict(name="Example Registration", handler_key="example_handler")
+
+        with patch("frappe.get_hooks", return_value={}):
+            with self.assertRaises(FlowProtocolError):
+                dispatch_data_exchange(context, flow)
+
+        with patch(
+            "frappe.get_hooks",
+            return_value={
+                "example_handler": ["app_one.handler", "app_two.handler"]
+            },
+        ), patch("frappe.get_attr") as get_attr:
+            with self.assertRaises(FlowProtocolError):
+                dispatch_data_exchange(context, flow)
+            get_attr.assert_not_called()
+
+    def test_handler_key_cannot_be_a_python_method_path(self):
+        from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_flow.whatsapp_flow import (
+            WhatsAppFlow,
+        )
+
+        flow = frappe._dict(handler_key="custom_app.integrations.handle_exchange")
+        with self.assertRaises(frappe.ValidationError):
+            WhatsAppFlow.validate_handler_key(flow)
+
+        flow.handler_key = "example_handler"
+        WhatsAppFlow.validate_handler_key(flow)
 
     def test_resolves_flow_by_token_and_account(self):
         from frappe_whatsapp.frappe_whatsapp.api.flow_endpoint import resolve_flow
@@ -629,7 +675,7 @@ class TestFlowEndpoint(FrappeTestCase):
     def test_ping_has_a_builtin_response(self):
         from frappe_whatsapp.frappe_whatsapp.api.flow_endpoint import dispatch_data_exchange
 
-        with patch("frappe.get_hooks", return_value=[]):
+        with patch("frappe.get_hooks") as get_hooks:
             response = dispatch_data_exchange(
                 {
                     "flow": None,
@@ -642,6 +688,7 @@ class TestFlowEndpoint(FrappeTestCase):
             )
 
         self.assertEqual(response, {"data": {"status": "active"}})
+        get_hooks.assert_not_called()
 
 
 if __name__ == "__main__":

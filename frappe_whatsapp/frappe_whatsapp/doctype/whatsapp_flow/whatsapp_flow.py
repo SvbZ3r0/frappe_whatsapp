@@ -2,6 +2,8 @@
 # For license information, please see license.txt
 
 import json
+import re
+
 import frappe
 from frappe import _
 from frappe.model.document import Document
@@ -24,6 +26,18 @@ class WhatsAppFlow(Document):
             self.validate_screens()
             self.validate_routes()
         self.validate_available_accounts()
+        self.validate_handler_key()
+
+    def validate_handler_key(self):
+        """Keep handler selection declarative and unsuitable for method paths."""
+        if not self.handler_key:
+            return
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,139}", self.handler_key):
+            frappe.throw(
+                _(
+                    "Backend Handler Key may contain only lowercase letters, numbers, underscores, and hyphens"
+                )
+            )
 
     def get_raw_flow_json(self):
         """Return validated Flow JSON from the raw editor."""

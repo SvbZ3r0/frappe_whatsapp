@@ -58,7 +58,7 @@ def handle_flow_request(flow=None, whatsapp_account=None):
 
 		flow_doc = resolve_flow(decrypted, account, flow)
 		context = normalize_context(decrypted, flow_doc, account)
-		ordinary_response = dispatch_data_exchange(context)
+		ordinary_response = dispatch_data_exchange(context, flow_doc)
 		encrypted_response = encrypt_response(
 			ordinary_response, aes_key, initial_vector
 		)
@@ -231,18 +231,36 @@ def normalize_context(decrypted, flow_doc, account):
 	}
 
 
-def dispatch_data_exchange(context):
-	"""Call installed-app handlers until one claims the normalized context."""
-	for handler_path in frappe.get_hooks("whatsapp_flow_data_exchange_handlers") or []:
-		response = frappe.get_attr(handler_path)(context)
-		if response is not None:
-			return validate_handler_response(response)
-
+def dispatch_data_exchange(context, flow_doc=None):
+	"""Dispatch only to the installed-app method selected by the Flow's key."""
 	if context["action"] == "ping":
 		return {"data": {"status": "active"}}
-	raise FlowProtocolError(
-		_("No installed app handled WhatsApp Flow {0}").format(context["flow"])
-	)
+
+	handler_key = flow_doc.handler_key if flow_doc else None
+	if not handler_key:
+		raise FlowProtocolError(
+			_("WhatsApp Flow {0} has no Backend Handler Key").format(context["flow"])
+		)
+
+	handler_map = frappe.get_hooks("whatsapp_flow_handlers", {}) or {}
+	handler_paths = handler_map.get(handler_key, [])
+	if isinstance(handler_paths, str):
+		handler_paths = [handler_paths]
+	if not handler_paths:
+		raise FlowProtocolError(
+			_("No installed app provides WhatsApp Flow handler key {0}").format(
+				handler_key
+			)
+		)
+	if len(handler_paths) != 1:
+		raise FlowProtocolError(
+			_("WhatsApp Flow handler key {0} is claimed by multiple installed apps").format(
+				handler_key
+			)
+		)
+
+	response = frappe.get_attr(handler_paths[0])(context)
+	return validate_handler_response(response)
 
 
 def validate_handler_response(response):

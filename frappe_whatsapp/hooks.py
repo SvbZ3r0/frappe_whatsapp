@@ -7,9 +7,9 @@ app_description = "WhatsApp integration for frappe"
 app_email = "shridhar.p@zerodha.com"
 app_license = "MIT"
 
-# Installed apps can handle decrypted WhatsApp Flow Data Exchange requests.
-# Handlers receive a normalized context dict and return {"screen": ..., "data": {...}}.
-# whatsapp_flow_data_exchange_handlers = ["my_app.api.handle_whatsapp_flow"]
+# Installed apps can map declarative Flow handler keys to trusted Python methods.
+# Each method receives a normalized context dict and returns {"screen": ..., "data": {...}}.
+# whatsapp_flow_handlers = {"my_flow": "my_app.api.handle_whatsapp_flow"}
 
 # Includes in <head>
 # ------------------

@@ -170,13 +170,15 @@ Build interactive forms using WhatsApp's native Flow Builder. Flows provide a ri
 1. In **WhatsApp Account**, use **Flows > Generate Flow Encryption Keys**, then **Register Flow Public Key**. Add the Meta App Secret and enable request-signature enforcement for production.
 2. Configure this endpoint in Meta, adding the Flow name as the URL-encoded `flow` hint:
    `<your-domain>/api/method/frappe_whatsapp.frappe_whatsapp.api.flow_endpoint.handle_flow_request?flow=Buyer%20Journey`
-3. Register an installed-app handler in that app's `hooks.py`:
+3. Set the Flow's **Backend Handler Key**, then map that key to a trusted method in an installed app's `hooks.py`:
 
 ```python
-whatsapp_flow_data_exchange_handlers = ["my_app.api.handle_whatsapp_flow"]
+whatsapp_flow_handlers = {
+    "example_registration": "my_app.api.handle_whatsapp_flow",
+}
 ```
 
-The handler receives only normalized, decrypted data and returns an ordinary response. `frappe_whatsapp` owns Meta's RSA-OAEP/AES-GCM envelope protocol in both directions:
+Only the one method mapped to the Flow's key receives its normalized, decrypted data. Missing keys and keys claimed by multiple apps fail closed. Flow records never contain executable Python paths. The handler returns an ordinary response; `frappe_whatsapp` owns Meta's RSA-OAEP/AES-GCM envelope protocol in both directions:
 
 ```python
 def handle_whatsapp_flow(context):

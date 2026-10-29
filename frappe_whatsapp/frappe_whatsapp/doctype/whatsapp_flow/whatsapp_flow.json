@@ -32,6 +32,7 @@
   "flow_json",
   "section_break_api",
   "endpoint_uri",
+  "handler_key",
   "column_break_3",
   "preview_url"
  ],
@@ -205,6 +206,12 @@
    "fieldname": "endpoint_uri",
    "fieldtype": "Data",
    "label": "Data Endpoint URI"
+  },
+  {
+   "description": "Non-executable key mapped to one trusted installed-app method through the whatsapp_flow_handlers hook",
+   "fieldname": "handler_key",
+   "fieldtype": "Data",
+   "label": "Backend Handler Key"
   },
   {
    "fieldname": "column_break_3",
