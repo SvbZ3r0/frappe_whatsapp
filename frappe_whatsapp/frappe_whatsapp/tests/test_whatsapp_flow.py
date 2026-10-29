@@ -3,8 +3,15 @@
 
 import unittest
 import json
+import base64
+from unittest.mock import patch
+
 import frappe
 from frappe.tests.utils import FrappeTestCase
+
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
 class TestWhatsAppFlow(FrappeTestCase):
@@ -476,19 +483,165 @@ class TestWhatsAppFlowMessage(FrappeTestCase):
 class TestFlowEndpoint(FrappeTestCase):
     """Test cases for flow endpoint handler."""
 
-    def test_health_check(self):
-        """Test endpoint health check response."""
-        from frappe_whatsapp.frappe_whatsapp.api.flow_endpoint import handle_init
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        cls.passphrase = "test-flow-passphrase"
+        cls.private_pem = cls.private_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.BestAvailableEncryption(cls.passphrase.encode()),
+        ).decode()
 
-        response = handle_init(None, "INIT", {})
-        self.assertIn("screen", response)
-        self.assertIn("data", response)
+    def make_envelope(self, payload):
+        aes_key = b"0123456789abcdef"
+        initial_vector = b"0123456789abcdef"
+        encrypted_key = self.private_key.public_key().encrypt(
+            aes_key,
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None,
+            ),
+        )
+        encrypted_data = AESGCM(aes_key).encrypt(
+            initial_vector,
+            json.dumps(payload).encode(),
+            None,
+        )
+        return {
+            "encrypted_aes_key": base64.b64encode(encrypted_key).decode(),
+            "encrypted_flow_data": base64.b64encode(encrypted_data).decode(),
+            "initial_vector": base64.b64encode(initial_vector).decode(),
+        }, aes_key, initial_vector
 
-    def test_ping_action(self):
-        """Test ping action response."""
-        # The endpoint should respond to ping with status: active
-        expected_response = {"data": {"status": "active"}}
-        # This would be tested via actual HTTP request in integration tests
+    def test_decrypts_meta_envelope(self):
+        from frappe_whatsapp.frappe_whatsapp.api.flow_endpoint import decrypt_request
+
+        payload = {
+            "action": "data_exchange",
+            "screen": "DETAILS",
+            "flow_token": "token-1",
+            "data": {"request_type": "standard"},
+        }
+        envelope, expected_key, expected_iv = self.make_envelope(payload)
+
+        decrypted, aes_key, initial_vector = decrypt_request(
+            envelope, self.private_pem, self.passphrase
+        )
+
+        self.assertEqual(decrypted, payload)
+        self.assertEqual(aes_key, expected_key)
+        self.assertEqual(initial_vector, expected_iv)
+
+    def test_encrypts_response_with_inverted_iv(self):
+        from frappe_whatsapp.frappe_whatsapp.api.flow_endpoint import encrypt_response
+
+        aes_key = b"0123456789abcdef"
+        initial_vector = b"0123456789abcdef"
+        response = {"screen": "SUMMARY", "data": {"result": 42}}
+
+        encoded = encrypt_response(response, aes_key, initial_vector)
+        flipped_iv = bytes(byte ^ 0xFF for byte in initial_vector)
+        plaintext = AESGCM(aes_key).decrypt(
+            flipped_iv, base64.b64decode(encoded), None
+        )
+
+        self.assertEqual(json.loads(plaintext), response)
+
+    def test_verifies_meta_signature(self):
+        from frappe_whatsapp.frappe_whatsapp.api.flow_endpoint import verify_signature
+
+        payload = b'{"encrypted_flow_data":"value"}'
+        signature = "sha256=5f04605dd4b9086391171422cca7944e748c74d58e3d7a6d7d163cbcb32a2308"
+
+        self.assertTrue(verify_signature(payload, signature, "secret"))
+        self.assertFalse(verify_signature(payload, signature, "wrong-secret"))
+
+    def test_normalizes_and_dispatches_to_installed_app(self):
+        from frappe_whatsapp.frappe_whatsapp.api.flow_endpoint import (
+            dispatch_data_exchange,
+            normalize_context,
+        )
+
+        account = frappe._dict(name="Test Account")
+        flow = frappe._dict(name="Example Registration")
+        decrypted = {
+            "action": "data_exchange",
+            "screen": "DETAILS",
+            "flow_token": "token-1",
+            "data": {"request_type": "standard"},
+        }
+        context = normalize_context(decrypted, flow, account)
+        handler = lambda received: {
+            "screen": "SUMMARY",
+            "data": {"received": received["data"]["request_type"]},
+        }
+
+        with patch("frappe.get_hooks", return_value=["test_app.flow_handler"]), patch(
+            "frappe.get_attr", return_value=handler
+        ):
+            response = dispatch_data_exchange(context)
+
+        self.assertEqual(
+            context,
+            {
+                "flow": "Example Registration",
+                "whatsapp_account": "Test Account",
+                "action": "data_exchange",
+                "screen": "DETAILS",
+                "flow_token": "token-1",
+                "data": {"request_type": "standard"},
+            },
+        )
+        self.assertEqual(
+            response,
+            {"screen": "SUMMARY", "data": {"received": "standard"}},
+        )
+
+    def test_resolves_flow_by_token_and_account(self):
+        from frappe_whatsapp.frappe_whatsapp.api.flow_endpoint import resolve_flow
+
+        account = frappe._dict(name="Test Account")
+        flow = frappe._dict(name="Example Registration")
+        flow.is_available_on = lambda account_name: account_name == "Test Account"
+
+        with patch(
+            "frappe.get_all",
+            return_value=[frappe._dict(flow="Example Registration")],
+        ) as get_all, patch("frappe.db.exists", return_value=True), patch(
+            "frappe.get_doc", return_value=flow
+        ):
+            resolved = resolve_flow({"flow_token": "token-1"}, account)
+
+        self.assertEqual(resolved.name, "Example Registration")
+        self.assertEqual(
+            get_all.call_args.kwargs["filters"],
+            {
+                "type": "Outgoing",
+                "content_type": "flow",
+                "flow_token": "token-1",
+                "whatsapp_account": "Test Account",
+            },
+        )
+
+    def test_ping_has_a_builtin_response(self):
+        from frappe_whatsapp.frappe_whatsapp.api.flow_endpoint import dispatch_data_exchange
+
+        with patch("frappe.get_hooks", return_value=[]):
+            response = dispatch_data_exchange(
+                {
+                    "flow": None,
+                    "whatsapp_account": "Test Account",
+                    "action": "ping",
+                    "screen": None,
+                    "flow_token": None,
+                    "data": {},
+                }
+            )
+
+        self.assertEqual(response, {"data": {"status": "active"}})
 
 
 if __name__ == "__main__":

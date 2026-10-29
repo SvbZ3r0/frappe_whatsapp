@@ -165,6 +165,32 @@ Build interactive forms using WhatsApp's native Flow Builder. Flows provide a ri
 - Set **Available On** to all phone numbers in the Flow's WABA or select an explicit set of WhatsApp Accounts/phone numbers. The same restriction is enforced when sending.
 - On a Flow message, use **Flow Action**, **Flow Screen**, and **Initial Flow Data** for dynamic launches. **Flow Action Payload** accepts the complete Meta payload when additional keys are needed.
 
+**Encrypted Data Exchange:**
+
+1. In **WhatsApp Account**, use **Flows > Generate Flow Encryption Keys**, then **Register Flow Public Key**. Add the Meta App Secret and enable request-signature enforcement for production.
+2. Configure this endpoint in Meta, adding the Flow name as the URL-encoded `flow` hint:
+   `<your-domain>/api/method/frappe_whatsapp.frappe_whatsapp.api.flow_endpoint.handle_flow_request?flow=Buyer%20Journey`
+3. Register an installed-app handler in that app's `hooks.py`:
+
+```python
+whatsapp_flow_data_exchange_handlers = ["my_app.api.handle_whatsapp_flow"]
+```
+
+The handler receives only normalized, decrypted data and returns an ordinary response. `frappe_whatsapp` owns Meta's RSA-OAEP/AES-GCM envelope protocol in both directions:
+
+```python
+def handle_whatsapp_flow(context):
+    if context["flow"] != "Example Registration":
+        return None
+
+    # context contains flow, whatsapp_account, action, screen,
+    # flow_token, and data.
+    return {
+        "screen": "SUMMARY",
+        "data": {"request_type": context["data"].get("request_type")},
+    }
+```
+
 ### Sync from Meta
 
 Keep your Frappe data synchronized with your Meta Business Account.

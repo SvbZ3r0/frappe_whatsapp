@@ -20,7 +20,14 @@
   "business_id",
   "is_default_incoming",
   "is_default_outgoing",
-  "allow_auto_read_receipt"
+  "allow_auto_read_receipt",
+  "flow_encryption_section",
+  "flow_public_key",
+  "column_break_flow_encryption",
+  "flow_private_key",
+  "flow_private_key_passphrase",
+  "app_secret",
+  "require_flow_request_signature"
  ],
  "fields": [
   {
@@ -100,6 +107,48 @@
    "fieldname": "allow_auto_read_receipt",
    "fieldtype": "Check",
    "label": "Allow auto read receipt"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "flow_encryption_section",
+   "fieldtype": "Section Break",
+   "label": "Flow Data Exchange Encryption"
+  },
+  {
+   "description": "RSA public key registered with Meta for this phone number",
+   "fieldname": "flow_public_key",
+   "fieldtype": "Code",
+   "label": "Flow Public Key",
+   "options": "Text",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_flow_encryption",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Encrypted RSA private key used only by the Flow endpoint",
+   "fieldname": "flow_private_key",
+   "fieldtype": "Password",
+   "label": "Flow Private Key"
+  },
+  {
+   "fieldname": "flow_private_key_passphrase",
+   "fieldtype": "Password",
+   "label": "Private Key Passphrase"
+  },
+  {
+   "description": "Meta App Secret used to verify X-Hub-Signature-256",
+   "fieldname": "app_secret",
+   "fieldtype": "Password",
+   "label": "Meta App Secret"
+  },
+  {
+   "default": "0",
+   "description": "Reject unsigned Flow endpoint requests. Enable in production after configuring the Meta App Secret.",
+   "fieldname": "require_flow_request_signature",
+   "fieldtype": "Check",
+   "label": "Require Flow Request Signature"
   }
  ],
  "grid_page_length": 50,

@@ -1,148 +1,269 @@
 # Copyright (c) 2025, Shridhar Patil and contributors
 # For license information, please see license.txt
 
-import json
+"""Encrypted WhatsApp Flow Data Exchange protocol endpoint."""
+
+import base64
+import binascii
 import hashlib
 import hmac
+import json
+
 import frappe
 from frappe import _
+from werkzeug.wrappers import Response
+
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+
+class FlowProtocolError(Exception):
+	"""The request does not satisfy the WhatsApp Flow protocol."""
+
+
+class FlowDecryptionError(FlowProtocolError):
+	"""No configured account could decrypt the request."""
+
+
+class FlowSignatureError(FlowProtocolError):
+	"""Meta request signature validation failed."""
 
 
 @frappe.whitelist(allow_guest=True)
-def handle_flow_request():
-    """
-    Handle WhatsApp Flow data exchange requests.
+def handle_flow_request(flow=None, whatsapp_account=None):
+	"""Decrypt, normalize, dispatch, and encrypt a WhatsApp Flow request.
 
-    This endpoint receives requests from WhatsApp when a flow needs data
-    or when a user completes a flow.
+	The optional ``flow`` and ``whatsapp_account`` query parameters are hints
+	that make account/Flow resolution deterministic for pings. The encryption
+	key and persisted flow token remain authoritative.
+	"""
+	if frappe.request.method == "GET":
+		return Response("ok", status=200, content_type="text/plain")
 
-    Endpoint URL to configure in Meta:
-    https://your-site.com/api/method/frappe_whatsapp.frappe_whatsapp.api.flow_endpoint.handle_flow_request
-    """
-    try:
-        # Get request data
-        if frappe.request.method == "GET":
-            # Health check - WhatsApp pings this to verify endpoint
-            return {"status": "ok"}
+	raw_body = frappe.request.get_data(cache=True)
+	try:
+		try:
+			envelope = json.loads(raw_body)
+		except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+			raise FlowProtocolError("Encrypted request body must be valid JSON") from exc
+		validate_envelope(envelope)
+		decrypted, aes_key, initial_vector, account = decrypt_and_identify_account(
+			envelope,
+			flow_hint=flow,
+			account_hint=whatsapp_account,
+		)
+		validate_request_signature(raw_body, account)
 
-        # POST request - actual flow data
-        data = frappe.request.get_json()
-
-        if not data:
-            frappe.throw(_("No data received"))
-
-        # Log the request for debugging
-        frappe.log_error(
-            f"WhatsApp Flow Request:\n{json.dumps(data, indent=2)}",
-            "WhatsApp Flow Endpoint"
-        )
-
-        # Get action type
-        action = data.get("action")
-
-        if action == "ping":
-            # Health check
-            return {
-                "data": {
-                    "status": "active"
-                }
-            }
-
-        if action == "INIT":
-            # Initial data request when flow opens
-            flow_token = data.get("flow_token")
-            screen_id = data.get("screen")
-
-            return handle_init(flow_token, screen_id, data)
-
-        if action == "data_exchange":
-            # Data exchange during flow navigation
-            return handle_data_exchange(data)
-
-        if action == "BACK":
-            # User pressed back button
-            return handle_back(data)
-
-        # Default response
-        return {
-            "data": {}
-        }
-
-    except Exception as e:
-        frappe.log_error(f"Flow endpoint error: {str(e)}", "WhatsApp Flow Error")
-        return {
-            "data": {
-                "error": str(e)
-            }
-        }
+		flow_doc = resolve_flow(decrypted, account, flow)
+		context = normalize_context(decrypted, flow_doc, account)
+		ordinary_response = dispatch_data_exchange(context)
+		encrypted_response = encrypt_response(
+			ordinary_response, aes_key, initial_vector
+		)
+		return Response(encrypted_response, status=200, content_type="text/plain")
+	except FlowSignatureError as exc:
+		log_protocol_error(exc, "WhatsApp Flow Signature Error")
+		return Response("", status=432, content_type="text/plain")
+	except FlowDecryptionError as exc:
+		log_protocol_error(exc, "WhatsApp Flow Decryption Error")
+		return Response("", status=421, content_type="text/plain")
+	except FlowProtocolError as exc:
+		log_protocol_error(exc, "WhatsApp Flow Protocol Error")
+		return Response("", status=400, content_type="text/plain")
+	except Exception as exc:
+		# Handler exceptions are untrusted and may embed decrypted customer data.
+		log_protocol_error(exc, "WhatsApp Flow Handler Error", include_message=False)
+		return Response("", status=500, content_type="text/plain")
 
 
-def handle_init(flow_token, screen_id, data):
-    """Handle initial flow request."""
-    # Return initial data for the first screen
-    # This can be customized based on flow_token or other parameters
-
-    return {
-        "screen": screen_id or "INIT",
-        "data": {}
-    }
+def validate_envelope(envelope):
+	if not isinstance(envelope, dict):
+		raise FlowProtocolError("Encrypted request body must be a JSON object")
+	for fieldname in ("encrypted_aes_key", "encrypted_flow_data", "initial_vector"):
+		if not isinstance(envelope.get(fieldname), str) or not envelope[fieldname]:
+			raise FlowProtocolError(f"Missing encrypted envelope field: {fieldname}")
 
 
-def handle_data_exchange(data):
-    """Handle data exchange requests during flow."""
-    flow_token = data.get("flow_token")
-    screen = data.get("screen")
-    form_data = data.get("data", {})
+def decrypt_and_identify_account(envelope, flow_hint=None, account_hint=None):
+	"""Prove account identity by decrypting with its configured private key."""
+	candidate_names = []
+	if account_hint and frappe.db.exists("WhatsApp Account", account_hint):
+		candidate_names.append(account_hint)
+	if flow_hint:
+		flow_account = frappe.db.get_value("WhatsApp Flow", flow_hint, "whatsapp_account")
+		if flow_account and flow_account not in candidate_names:
+			candidate_names.append(flow_account)
 
-    # Process the form data
-    # You can save it, validate it, or fetch additional data
+	configured_accounts = frappe.get_all(
+		"WhatsApp Account",
+		filters={"flow_public_key": ["!=", ""]},
+		pluck="name",
+	)
+	for account_name in configured_accounts:
+		if account_name not in candidate_names:
+			candidate_names.append(account_name)
 
-    # Log flow data for processing
-    if flow_token:
-        save_flow_data(flow_token, screen, form_data)
+	for account_name in candidate_names:
+		account = frappe.get_doc("WhatsApp Account", account_name)
+		private_key = account.get_password("flow_private_key", raise_exception=False)
+		if not private_key:
+			continue
+		passphrase = account.get_password(
+			"flow_private_key_passphrase", raise_exception=False
+		)
+		try:
+			decrypted, aes_key, initial_vector = decrypt_request(
+				envelope, private_key, passphrase
+			)
+			return decrypted, aes_key, initial_vector, account
+		except (ValueError, TypeError, InvalidTag, binascii.Error):
+			continue
 
-    # Return next screen data or completion
-    return {
-        "data": {}
-    }
+	raise FlowDecryptionError("Unable to decrypt request with a configured account key")
 
 
-def handle_back(data):
-    """Handle back button press."""
-    return {
-        "data": {}
-    }
+def decrypt_request(envelope, private_key_pem, passphrase=None):
+	"""Decrypt Meta's RSA-OAEP/AES-GCM request envelope."""
+	password = passphrase.encode() if passphrase else None
+	private_key = serialization.load_pem_private_key(
+		private_key_pem.encode(), password=password
+	)
+	encrypted_aes_key = base64.b64decode(
+		envelope["encrypted_aes_key"], validate=True
+	)
+	aes_key = private_key.decrypt(
+		encrypted_aes_key,
+		padding.OAEP(
+			mgf=padding.MGF1(algorithm=hashes.SHA256()),
+			algorithm=hashes.SHA256(),
+			label=None,
+		),
+	)
+	initial_vector = base64.b64decode(envelope["initial_vector"], validate=True)
+	encrypted_flow_data = base64.b64decode(
+		envelope["encrypted_flow_data"], validate=True
+	)
+	plaintext = AESGCM(aes_key).decrypt(
+		initial_vector, encrypted_flow_data, None
+	)
+	decrypted = json.loads(plaintext)
+	if not isinstance(decrypted, dict):
+		raise FlowProtocolError("Decrypted Flow request must be a JSON object")
+	return decrypted, aes_key, initial_vector
 
 
-def save_flow_data(flow_token, screen, form_data):
-    """Save flow data for later processing."""
-    try:
-        # Create or update a record to store flow data
-        existing = frappe.db.exists("WhatsApp Flow Data", {"flow_token": flow_token})
+def validate_request_signature(raw_body, account):
+	"""Validate X-Hub-Signature-256 when supplied or required by the account."""
+	signature = frappe.request.headers.get("X-Hub-Signature-256")
+	required = bool(account.require_flow_request_signature)
+	if not signature and not required:
+		return
 
-        if existing:
-            doc = frappe.get_doc("WhatsApp Flow Data", existing)
-            current_data = json.loads(doc.data or "{}")
-            current_data.update(form_data)
-            doc.data = json.dumps(current_data)
-            doc.last_screen = screen
-            doc.save(ignore_permissions=True)
-        else:
-            # If WhatsApp Flow Data doctype doesn't exist, just log
-            frappe.log_error(
-                f"Flow Token: {flow_token}\nScreen: {screen}\nData: {json.dumps(form_data)}",
-                "WhatsApp Flow Data"
-            )
-    except Exception as e:
-        frappe.log_error(f"save_flow_data error: {str(e)}")
+	app_secret = account.get_password("app_secret", raise_exception=False)
+	if not signature or not app_secret:
+		raise FlowSignatureError("Missing Meta request signature configuration")
+	if not verify_signature(raw_body, signature, app_secret):
+		raise FlowSignatureError("Invalid Meta request signature")
 
 
 def verify_signature(payload, signature, app_secret):
-    """Verify the request signature from WhatsApp."""
-    expected_signature = hmac.new(
-        app_secret.encode(),
-        payload.encode(),
-        hashlib.sha256
-    ).hexdigest()
+	"""Constant-time validation of Meta's X-Hub-Signature-256 header."""
+	if isinstance(payload, str):
+		payload = payload.encode()
+	expected = "sha256=" + hmac.new(
+		app_secret.encode(), payload, hashlib.sha256
+	).hexdigest()
+	return hmac.compare_digest(signature, expected)
 
-    return hmac.compare_digest(signature, expected_signature)
+
+def resolve_flow(decrypted, account, flow_hint=None):
+	"""Resolve the Flow from an explicit hint and/or the persisted launch token."""
+	flow_token = decrypted.get("flow_token")
+	correlated_flow = None
+	if flow_token:
+		matches = frappe.get_all(
+			"WhatsApp Message",
+			filters={
+				"type": "Outgoing",
+				"content_type": "flow",
+				"flow_token": flow_token,
+				"whatsapp_account": account.name,
+			},
+			fields=["flow"],
+			order_by="creation desc",
+			limit=1,
+		)
+		if matches:
+			correlated_flow = matches[0].flow
+
+	if flow_hint and correlated_flow and flow_hint != correlated_flow:
+		raise FlowProtocolError("Flow hint does not match the persisted launch token")
+	flow_name = correlated_flow or flow_hint
+	if not flow_name:
+		if decrypted.get("action") == "ping":
+			return None
+		raise FlowProtocolError("Unable to identify Flow from request")
+	if not frappe.db.exists("WhatsApp Flow", flow_name):
+		raise FlowProtocolError("Unknown WhatsApp Flow")
+
+	flow_doc = frappe.get_doc("WhatsApp Flow", flow_name)
+	if not flow_doc.is_available_on(account.name):
+		raise FlowProtocolError("Flow is not available on the identified account")
+	return flow_doc
+
+
+def normalize_context(decrypted, flow_doc, account):
+	data = decrypted.get("data") or {}
+	if not isinstance(data, dict):
+		raise FlowProtocolError("Flow request data must be a JSON object")
+	action = decrypted.get("action")
+	if action not in ("INIT", "data_exchange", "BACK", "ping"):
+		raise FlowProtocolError("Unsupported Flow action")
+	return {
+		"flow": flow_doc.name if flow_doc else None,
+		"whatsapp_account": account.name,
+		"action": action,
+		"screen": decrypted.get("screen"),
+		"flow_token": decrypted.get("flow_token"),
+		"data": data,
+	}
+
+
+def dispatch_data_exchange(context):
+	"""Call installed-app handlers until one claims the normalized context."""
+	for handler_path in frappe.get_hooks("whatsapp_flow_data_exchange_handlers") or []:
+		response = frappe.get_attr(handler_path)(context)
+		if response is not None:
+			return validate_handler_response(response)
+
+	if context["action"] == "ping":
+		return {"data": {"status": "active"}}
+	raise FlowProtocolError(
+		_("No installed app handled WhatsApp Flow {0}").format(context["flow"])
+	)
+
+
+def validate_handler_response(response):
+	if not isinstance(response, dict):
+		raise FlowProtocolError("Flow handler must return a JSON object")
+	if "data" not in response or not isinstance(response["data"], dict):
+		raise FlowProtocolError("Flow handler response must contain a data object")
+	if "screen" in response and not isinstance(response["screen"], str):
+		raise FlowProtocolError("Flow handler response screen must be a string")
+	return response
+
+
+def encrypt_response(response, aes_key, initial_vector):
+	"""Encrypt a response using AES-GCM and Meta's bitwise-inverted IV rule."""
+	flipped_iv = bytes(byte ^ 0xFF for byte in initial_vector)
+	plaintext = json.dumps(response, separators=(",", ":")).encode()
+	encrypted = AESGCM(aes_key).encrypt(flipped_iv, plaintext, None)
+	return base64.b64encode(encrypted).decode()
+
+
+def log_protocol_error(exc, title, include_message=True):
+	# Never log the encrypted envelope, decrypted customer data, or key material.
+	message = f"{type(exc).__name__}: {exc}" if include_message else type(exc).__name__
+	frappe.log_error(message, title)

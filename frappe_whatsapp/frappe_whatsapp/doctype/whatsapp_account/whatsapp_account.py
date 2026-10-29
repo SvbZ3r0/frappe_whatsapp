@@ -27,6 +27,62 @@ class WhatsAppAccount(Document):
 				whatsapp_account.save()
 
 	@frappe.whitelist()
+	def generate_flow_encryption_keys(self):
+		"""Generate and securely store an encrypted RSA-2048 key pair."""
+		from cryptography.hazmat.primitives import serialization
+		from cryptography.hazmat.primitives.asymmetric import rsa
+
+		passphrase = frappe.generate_hash(length=32)
+		private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+		private_pem = private_key.private_bytes(
+			encoding=serialization.Encoding.PEM,
+			format=serialization.PrivateFormat.TraditionalOpenSSL,
+			encryption_algorithm=serialization.BestAvailableEncryption(passphrase.encode()),
+		).decode()
+		public_pem = private_key.public_key().public_bytes(
+			encoding=serialization.Encoding.PEM,
+			format=serialization.PublicFormat.SubjectPublicKeyInfo,
+		).decode()
+
+		self.flow_private_key = private_pem
+		self.flow_private_key_passphrase = passphrase
+		self.flow_public_key = public_pem
+		self.save(ignore_permissions=True)
+		return public_pem
+
+	@frappe.whitelist()
+	def register_flow_public_key(self):
+		"""Register this phone number's Flow encryption public key with Meta."""
+		import requests
+
+		for field in ("url", "version", "phone_id", "flow_public_key"):
+			if not self.get(field):
+				frappe.throw(_("{0} is required").format(frappe.bold(self.meta.get_label(field))))
+		token = self.get_password("token")
+		if not token:
+			frappe.throw(_("Access token is required"))
+
+		endpoint = f"{self.url}/{self.version}/{self.phone_id}/whatsapp_business_encryption"
+		response = requests.post(
+			endpoint,
+			headers={"Authorization": f"Bearer {token}"},
+			data={"business_public_key": self.flow_public_key},
+			timeout=30,
+		)
+		if response.status_code != 200:
+			try:
+				error = response.json().get("error", {})
+				error_message = error.get("error_user_msg") or error.get("message")
+			except (ValueError, AttributeError):
+				error_message = response.text
+			frappe.throw(_("Failed to register Flow public key: {0}").format(error_message))
+
+		result = response.json()
+		if not result.get("success"):
+			frappe.throw(_("Meta did not accept the Flow public key"))
+		return result
+
+	@frappe.whitelist()
 	def subscribe_app(self):
 		"""Subscribe this app to webhooks for the WhatsApp Business Account.
 
