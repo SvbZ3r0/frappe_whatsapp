@@ -29,9 +29,16 @@ class WhatsAppAccount(Document):
 
 	@frappe.whitelist()
 	def generate_flow_encryption_keys(self):
-		"""Generate and securely store an encrypted RSA-2048 key pair."""
+		"""Stage an encrypted RSA-2048 key pair without replacing the active key."""
 		from cryptography.hazmat.primitives import serialization
 		from cryptography.hazmat.primitives.asymmetric import rsa
+
+		if self.flow_pending_public_key:
+			frappe.throw(
+				_(
+					"A Flow encryption key rotation is already pending. Register and verify it before generating another key."
+				)
+			)
 
 		passphrase = frappe.generate_hash(length=32)
 		private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -45,17 +52,15 @@ class WhatsAppAccount(Document):
 			format=serialization.PublicFormat.SubjectPublicKeyInfo,
 		).decode()
 
-		self.flow_private_key = private_pem
-		self.flow_private_key_passphrase = passphrase
-		self.flow_public_key = public_pem
-		self.flow_public_key_signature_status = "NOT VERIFIED"
-		self.flow_public_key_verified = 0
-		self.flow_public_key_verified_on = None
+		self.flow_pending_private_key = private_pem
+		self.flow_pending_private_key_passphrase = passphrase
+		self.flow_pending_public_key = public_pem
+		self.flow_pending_key_status = "Generated - Not Registered"
 		self.save(ignore_permissions=True)
 		return public_pem
 
 	def get_flow_encryption_api_config(self):
-		for field in ("url", "version", "phone_id", "flow_public_key"):
+		for field in ("url", "version", "phone_id"):
 			if not self.get(field):
 				frappe.throw(
 					_("{0} is required").format(frappe.bold(self.meta.get_label(field)))
@@ -70,14 +75,18 @@ class WhatsAppAccount(Document):
 
 	@frappe.whitelist()
 	def register_flow_public_key(self):
-		"""Register this phone number's Flow encryption public key with Meta."""
+		"""Register the pending key, leaving the active decryption key untouched."""
 		import requests
 
+		public_key = self.flow_pending_public_key or self.flow_public_key
+		if not public_key:
+			frappe.throw(_("Generate a Flow encryption key first"))
+		registering_pending_key = bool(self.flow_pending_public_key)
 		endpoint, headers = self.get_flow_encryption_api_config()
 		response = requests.post(
 			endpoint,
 			headers=headers,
-			data={"business_public_key": self.flow_public_key},
+			data={"business_public_key": public_key},
 			timeout=30,
 		)
 		if response.status_code != 200:
@@ -91,17 +100,29 @@ class WhatsAppAccount(Document):
 		result = response.json()
 		if not result.get("success"):
 			frappe.throw(_("Meta did not accept the Flow public key"))
-		self.flow_public_key_signature_status = "NOT VERIFIED"
-		self.flow_public_key_verified = 0
-		self.flow_public_key_verified_on = None
+		if registering_pending_key:
+			self.flow_pending_key_status = "Registered - Verification Required"
+		else:
+			self.flow_public_key_signature_status = "NOT VERIFIED"
+			self.flow_public_key_verified = 0
+			self.flow_public_key_verified_on = None
 		self.save(ignore_permissions=True)
 		return result
 
 	@frappe.whitelist()
 	def verify_flow_public_key(self):
-		"""Verify Meta's registered key and signature status against the local key."""
+		"""Verify Meta's key and atomically promote a pending rotation."""
 		import requests
 
+		candidate_public_key = self.flow_pending_public_key or self.flow_public_key
+		if not candidate_public_key:
+			frappe.throw(_("Generate a Flow encryption key first"))
+		verifying_pending_key = bool(self.flow_pending_public_key)
+		if (
+			verifying_pending_key
+			and self.flow_pending_key_status == "Generated - Not Registered"
+		):
+			frappe.throw(_("Register the pending Flow public key before verifying it"))
 		endpoint, headers = self.get_flow_encryption_api_config()
 		response = requests.get(endpoint, headers=headers, timeout=30)
 		if response.status_code != 200:
@@ -117,18 +138,59 @@ class WhatsAppAccount(Document):
 		signature_status = (
 			result.get("business_public_key_signature_status") or "NOT REGISTERED"
 		).upper()
-		key_matches = public_keys_match(self.flow_public_key, meta_public_key)
+		key_matches = public_keys_match(candidate_public_key, meta_public_key)
 		verified = signature_status == "VALID" and key_matches
 
-		self.flow_public_key_signature_status = signature_status
-		self.flow_public_key_verified = int(verified)
-		self.flow_public_key_verified_on = now_datetime()
+		if verifying_pending_key:
+			if verified:
+				self.promote_pending_flow_encryption_key(signature_status)
+			else:
+				self.flow_pending_key_status = f"Verification Failed - {signature_status}"
+		else:
+			self.flow_public_key_signature_status = signature_status
+			self.flow_public_key_verified = int(verified)
+			self.flow_public_key_verified_on = now_datetime()
 		self.save(ignore_permissions=True)
 		return {
 			"verified": verified,
 			"signature_status": signature_status,
 			"key_matches": key_matches,
+			"promoted": bool(verifying_pending_key and verified),
 		}
+
+	def promote_pending_flow_encryption_key(self, signature_status):
+		"""Promote a verified pending key and retain the former active key."""
+		pending_private_key = self.get_password(
+			"flow_pending_private_key", raise_exception=False
+		)
+		pending_passphrase = self.get_password(
+			"flow_pending_private_key_passphrase", raise_exception=False
+		)
+		if not pending_private_key:
+			frappe.throw(_("Pending Flow private key is missing"))
+
+		active_private_key = self.get_password(
+			"flow_private_key", raise_exception=False
+		)
+		active_passphrase = self.get_password(
+			"flow_private_key_passphrase", raise_exception=False
+		)
+		if self.flow_public_key and active_private_key:
+			self.flow_previous_public_key = self.flow_public_key
+			self.flow_previous_private_key = active_private_key
+			self.flow_previous_private_key_passphrase = active_passphrase
+			self.flow_previous_key_retained_on = now_datetime()
+
+		self.flow_public_key = self.flow_pending_public_key
+		self.flow_private_key = pending_private_key
+		self.flow_private_key_passphrase = pending_passphrase
+		self.flow_pending_public_key = None
+		self.flow_pending_private_key = None
+		self.flow_pending_private_key_passphrase = None
+		self.flow_pending_key_status = None
+		self.flow_public_key_signature_status = signature_status
+		self.flow_public_key_verified = 1
+		self.flow_public_key_verified_on = now_datetime()
 
 	@frappe.whitelist()
 	def subscribe_app(self):

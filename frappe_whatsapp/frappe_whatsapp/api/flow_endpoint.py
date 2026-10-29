@@ -126,7 +126,11 @@ def decrypt_and_identify_account(envelope, flow_hint=None, account_hint=None):
 
 	configured_accounts = frappe.get_all(
 		"WhatsApp Account",
-		filters={"flow_public_key": ["!=", ""]},
+		or_filters=[
+			["flow_public_key", "!=", ""],
+			["flow_pending_public_key", "!=", ""],
+			["flow_previous_public_key", "!=", ""],
+		],
 		pluck="name",
 	)
 	for account_name in configured_accounts:
@@ -135,21 +139,33 @@ def decrypt_and_identify_account(envelope, flow_hint=None, account_hint=None):
 
 	for account_name in candidate_names:
 		account = frappe.get_doc("WhatsApp Account", account_name)
-		private_key = account.get_password("flow_private_key", raise_exception=False)
-		if not private_key:
-			continue
-		passphrase = account.get_password(
-			"flow_private_key_passphrase", raise_exception=False
-		)
-		try:
-			decrypted, aes_key, initial_vector = decrypt_request(
-				envelope, private_key, passphrase
-			)
-			return decrypted, aes_key, initial_vector, account
-		except (ValueError, TypeError, InvalidTag, binascii.Error):
-			continue
+		for private_key, passphrase in get_flow_decryption_keys(account):
+			try:
+				decrypted, aes_key, initial_vector = decrypt_request(
+					envelope, private_key, passphrase
+				)
+				return decrypted, aes_key, initial_vector, account
+			except (ValueError, TypeError, InvalidTag, binascii.Error):
+				continue
 
 	raise FlowDecryptionError("Unable to decrypt request with a configured account key")
+
+
+def get_flow_decryption_keys(account):
+	"""Return active, pending, and retained keys for interruption-free rotation."""
+	key_fields = (
+		("flow_private_key", "flow_private_key_passphrase"),
+		("flow_pending_private_key", "flow_pending_private_key_passphrase"),
+		("flow_previous_private_key", "flow_previous_private_key_passphrase"),
+	)
+	keys = []
+	for private_key_field, passphrase_field in key_fields:
+		private_key = account.get_password(private_key_field, raise_exception=False)
+		if not private_key:
+			continue
+		passphrase = account.get_password(passphrase_field, raise_exception=False)
+		keys.append((private_key, passphrase))
+	return keys
 
 
 def decrypt_request(envelope, private_key_pem, passphrase=None):

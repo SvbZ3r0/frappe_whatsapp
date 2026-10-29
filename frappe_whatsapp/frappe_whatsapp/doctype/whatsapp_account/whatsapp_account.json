@@ -26,9 +26,17 @@
   "flow_public_key_signature_status",
   "flow_public_key_verified",
   "flow_public_key_verified_on",
+  "flow_pending_public_key",
+  "flow_pending_key_status",
+  "flow_previous_key_retained_on",
   "column_break_flow_encryption",
   "flow_private_key",
   "flow_private_key_passphrase",
+  "flow_pending_private_key",
+  "flow_pending_private_key_passphrase",
+  "flow_previous_public_key",
+  "flow_previous_private_key",
+  "flow_previous_private_key_passphrase",
   "app_secret",
   "require_flow_request_signature"
  ],
@@ -147,6 +155,27 @@
    "read_only": 1
   },
   {
+   "description": "Staged public key awaiting registration and verification with Meta. The active key remains available during rotation.",
+   "fieldname": "flow_pending_public_key",
+   "fieldtype": "Code",
+   "label": "Pending Flow Public Key",
+   "options": "Text",
+   "read_only": 1
+  },
+  {
+   "fieldname": "flow_pending_key_status",
+   "fieldtype": "Data",
+   "label": "Pending Key Status",
+   "read_only": 1
+  },
+  {
+   "description": "The former private key remains available as a decryption fallback after a verified rotation.",
+   "fieldname": "flow_previous_key_retained_on",
+   "fieldtype": "Datetime",
+   "label": "Previous Key Retained On",
+   "read_only": 1
+  },
+  {
    "fieldname": "column_break_flow_encryption",
    "fieldtype": "Column Break"
   },
@@ -160,6 +189,38 @@
    "fieldname": "flow_private_key_passphrase",
    "fieldtype": "Password",
    "label": "Private Key Passphrase"
+  },
+  {
+   "fieldname": "flow_pending_private_key",
+   "fieldtype": "Password",
+   "hidden": 1,
+   "label": "Pending Flow Private Key"
+  },
+  {
+   "fieldname": "flow_pending_private_key_passphrase",
+   "fieldtype": "Password",
+   "hidden": 1,
+   "label": "Pending Private Key Passphrase"
+  },
+  {
+   "fieldname": "flow_previous_public_key",
+   "fieldtype": "Code",
+   "hidden": 1,
+   "label": "Previous Flow Public Key",
+   "options": "Text",
+   "read_only": 1
+  },
+  {
+   "fieldname": "flow_previous_private_key",
+   "fieldtype": "Password",
+   "hidden": 1,
+   "label": "Previous Flow Private Key"
+  },
+  {
+   "fieldname": "flow_previous_private_key_passphrase",
+   "fieldtype": "Password",
+   "hidden": 1,
+   "label": "Previous Private Key Passphrase"
   },
   {
    "description": "Meta App Secret used to verify X-Hub-Signature-256",

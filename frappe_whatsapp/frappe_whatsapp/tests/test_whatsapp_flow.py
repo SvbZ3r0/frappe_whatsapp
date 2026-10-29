@@ -693,7 +693,12 @@ class TestFlowEndpoint(FrappeTestCase):
 
         self.assertEqual(
             result,
-            {"verified": True, "signature_status": "VALID", "key_matches": True},
+            {
+                "verified": True,
+                "signature_status": "VALID",
+                "key_matches": True,
+                "promoted": False,
+            },
         )
         self.assertEqual(account.flow_public_key_verified, 1)
         self.assertIsNotNone(account.flow_public_key_verified_on)
@@ -708,6 +713,144 @@ class TestFlowEndpoint(FrappeTestCase):
         self.assertTrue(mismatch["key_matches"])
         self.assertEqual(account.flow_public_key_verified, 0)
         account.save.assert_called_once_with(ignore_permissions=True)
+
+    def test_key_generation_stages_without_replacing_active_key(self):
+        from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_account.whatsapp_account import (
+            WhatsAppAccount,
+        )
+
+        account = frappe._dict(
+            flow_public_key="active-public-key",
+            flow_private_key="active-private-key",
+            flow_private_key_passphrase="active-passphrase",
+            flow_pending_public_key=None,
+        )
+        account.save = MagicMock()
+
+        generated_public_key = WhatsAppAccount.generate_flow_encryption_keys(account)
+
+        self.assertEqual(account.flow_public_key, "active-public-key")
+        self.assertEqual(account.flow_private_key, "active-private-key")
+        self.assertEqual(account.flow_private_key_passphrase, "active-passphrase")
+        self.assertEqual(account.flow_pending_public_key, generated_public_key)
+        self.assertIn("BEGIN PUBLIC KEY", generated_public_key)
+        self.assertIn("BEGIN RSA PRIVATE KEY", account.flow_pending_private_key)
+        self.assertEqual(account.flow_pending_key_status, "Generated - Not Registered")
+        account.save.assert_called_once_with(ignore_permissions=True)
+
+    def test_verified_pending_key_is_promoted_with_active_key_retained(self):
+        from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_account.whatsapp_account import (
+            WhatsAppAccount,
+        )
+
+        pending_private_key = rsa.generate_private_key(
+            public_exponent=65537, key_size=2048
+        )
+        pending_public_pem = pending_private_key.public_key().public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode()
+        account = frappe._dict(
+            flow_public_key="old-public-key",
+            flow_pending_public_key=pending_public_pem,
+            flow_pending_key_status="Registered - Verification Required",
+        )
+        passwords = {
+            "flow_private_key": "old-private-key",
+            "flow_private_key_passphrase": "old-passphrase",
+            "flow_pending_private_key": "new-private-key",
+            "flow_pending_private_key_passphrase": "new-passphrase",
+        }
+        account.get_password = MagicMock(
+            side_effect=lambda fieldname, raise_exception=False: passwords.get(fieldname)
+        )
+        account.get_flow_encryption_api_config = lambda: (
+            "https://graph.facebook.com/v18.0/phone/whatsapp_business_encryption",
+            {"Authorization": "Bearer redacted"},
+        )
+        account.promote_pending_flow_encryption_key = (
+            lambda signature_status: WhatsAppAccount.promote_pending_flow_encryption_key(
+                account, signature_status
+            )
+        )
+        account.save = MagicMock()
+        response = MagicMock(status_code=200)
+        response.json.return_value = {
+            "business_public_key": pending_public_pem,
+            "business_public_key_signature_status": "VALID",
+        }
+
+        with patch("requests.get", return_value=response):
+            result = WhatsAppAccount.verify_flow_public_key(account)
+
+        self.assertTrue(result["promoted"])
+        self.assertEqual(account.flow_public_key, pending_public_pem)
+        self.assertEqual(account.flow_private_key, "new-private-key")
+        self.assertEqual(account.flow_previous_public_key, "old-public-key")
+        self.assertEqual(account.flow_previous_private_key, "old-private-key")
+        self.assertIsNone(account.flow_pending_public_key)
+        self.assertEqual(account.flow_public_key_verified, 1)
+        account.save.assert_called_once_with(ignore_permissions=True)
+
+    def test_registration_sends_pending_key_without_replacing_active_key(self):
+        from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_account.whatsapp_account import (
+            WhatsAppAccount,
+        )
+
+        account = frappe._dict(
+            flow_public_key="active-public-key",
+            flow_pending_public_key="pending-public-key",
+            flow_pending_key_status="Generated - Not Registered",
+            flow_public_key_verified=1,
+        )
+        account.get_flow_encryption_api_config = lambda: (
+            "https://graph.facebook.com/v18.0/phone/whatsapp_business_encryption",
+            {"Authorization": "Bearer redacted"},
+        )
+        account.save = MagicMock()
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"success": True}
+
+        with patch("requests.post", return_value=response) as post:
+            WhatsAppAccount.register_flow_public_key(account)
+
+        self.assertEqual(
+            post.call_args.kwargs["data"],
+            {"business_public_key": "pending-public-key"},
+        )
+        self.assertEqual(account.flow_public_key, "active-public-key")
+        self.assertEqual(account.flow_public_key_verified, 1)
+        self.assertEqual(
+            account.flow_pending_key_status, "Registered - Verification Required"
+        )
+        account.save.assert_called_once_with(ignore_permissions=True)
+
+    def test_decryption_keys_include_rotation_fallbacks(self):
+        from frappe_whatsapp.frappe_whatsapp.api.flow_endpoint import (
+            get_flow_decryption_keys,
+        )
+
+        passwords = {
+            "flow_private_key": "active-key",
+            "flow_private_key_passphrase": "active-passphrase",
+            "flow_pending_private_key": "pending-key",
+            "flow_pending_private_key_passphrase": "pending-passphrase",
+            "flow_previous_private_key": "previous-key",
+            "flow_previous_private_key_passphrase": "previous-passphrase",
+        }
+        account = frappe._dict()
+        account.get_password = MagicMock(
+            side_effect=lambda fieldname, raise_exception=False: passwords.get(fieldname)
+        )
+
+        self.assertEqual(
+            get_flow_decryption_keys(account),
+            [
+                ("active-key", "active-passphrase"),
+                ("pending-key", "pending-passphrase"),
+                ("previous-key", "previous-passphrase"),
+            ],
+        )
 
     def test_normalizes_and_dispatches_to_installed_app(self):
         from frappe_whatsapp.frappe_whatsapp.api.flow_endpoint import (
