@@ -8,6 +8,7 @@ import binascii
 import hashlib
 import hmac
 import json
+import re
 
 import frappe
 from frappe import _
@@ -43,6 +44,7 @@ def handle_flow_request(flow=None, whatsapp_account=None):
 		return Response("ok", status=200, content_type="text/plain")
 
 	raw_body = frappe.request.get_data(cache=True)
+	diagnostics = {}
 	try:
 		try:
 			envelope = json.loads(raw_body)
@@ -54,9 +56,18 @@ def handle_flow_request(flow=None, whatsapp_account=None):
 			flow_hint=flow,
 			account_hint=whatsapp_account,
 		)
+		diagnostics.update(
+			{
+				"whatsapp_account": account.name,
+				"action": decrypted.get("action"),
+				"screen": decrypted.get("screen"),
+			}
+		)
 		validate_request_signature(raw_body, account)
 
 		flow_doc = resolve_flow(decrypted, account, flow)
+		if flow_doc:
+			diagnostics["flow"] = flow_doc.name
 		validate_data_api_version(decrypted, flow_doc)
 		context = normalize_context(decrypted, flow_doc, account)
 		ordinary_response = dispatch_data_exchange(context, flow_doc)
@@ -68,17 +79,22 @@ def handle_flow_request(flow=None, whatsapp_account=None):
 		)
 		return Response(encrypted_response, status=200, content_type="text/plain")
 	except FlowSignatureError as exc:
-		log_protocol_error(exc, "WhatsApp Flow Signature Error")
+		log_protocol_error(exc, "WhatsApp Flow Signature Error", diagnostics)
 		return Response("", status=432, content_type="text/plain")
 	except FlowDecryptionError as exc:
-		log_protocol_error(exc, "WhatsApp Flow Decryption Error")
+		log_protocol_error(exc, "WhatsApp Flow Decryption Error", diagnostics)
 		return Response("", status=421, content_type="text/plain")
 	except FlowProtocolError as exc:
-		log_protocol_error(exc, "WhatsApp Flow Protocol Error")
+		log_protocol_error(exc, "WhatsApp Flow Protocol Error", diagnostics)
 		return Response("", status=400, content_type="text/plain")
 	except Exception as exc:
 		# Handler exceptions are untrusted and may embed decrypted customer data.
-		log_protocol_error(exc, "WhatsApp Flow Handler Error", include_message=False)
+		log_protocol_error(
+			exc,
+			"WhatsApp Flow Handler Error",
+			diagnostics,
+			include_message=False,
+		)
 		return Response("", status=500, content_type="text/plain")
 
 
@@ -305,7 +321,24 @@ def encrypt_response(response, aes_key, initial_vector):
 	return base64.b64encode(encrypted).decode()
 
 
-def log_protocol_error(exc, title, include_message=True):
-	# Never log the encrypted envelope, decrypted customer data, or key material.
+def log_protocol_error(exc, title, diagnostics=None, include_message=True):
+	"""Log structural diagnostics without payloads, tokens, or key material."""
 	message = f"{type(exc).__name__}: {exc}" if include_message else type(exc).__name__
+	identifiers = []
+	for key in ("flow", "whatsapp_account", "action", "screen"):
+		value = get_safe_diagnostic_value(key, (diagnostics or {}).get(key))
+		if value:
+			identifiers.append(f"{key}={value}")
+	if identifiers:
+		message = f"{message}\n" + " ".join(identifiers)
 	frappe.log_error(message, title)
+
+
+def get_safe_diagnostic_value(key, value):
+	if not isinstance(value, str) or not value:
+		return None
+	if key == "action":
+		return value if value in ("INIT", "data_exchange", "BACK", "ping") else "<invalid>"
+	if key == "screen":
+		return value if re.fullmatch(r"[A-Za-z0-9_.-]{1,140}", value) else "<invalid>"
+	return value.replace("\n", " ").replace("\r", " ")[:140]

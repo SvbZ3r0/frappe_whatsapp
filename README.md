@@ -193,6 +193,8 @@ def handle_whatsapp_flow(context):
     }
 ```
 
+Completed Flow answers are stored structurally in `WhatsApp Message.flow_response`; the message summary is neutral and realtime notifications contain only the incoming document name. `WhatsApp Notification Log` remains the intentional raw webhook receipt and should be governed by normal ERP permissions and retention rules.
+
 ### Sync from Meta
 
 Keep your Frappe data synchronized with your Meta Business Account.

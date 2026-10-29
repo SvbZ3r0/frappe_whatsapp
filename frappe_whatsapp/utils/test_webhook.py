@@ -451,7 +451,9 @@ class TestWebhookEndpoint(IntegrationTestCase):
         }
         frappe.local.form_dict = frappe._dict(payload)
 
-        with patch("frappe_whatsapp.utils.webhook.frappe.request", mock_request):
+        with patch("frappe_whatsapp.utils.webhook.frappe.request", mock_request), patch(
+            "frappe_whatsapp.utils.webhook.frappe.publish_realtime"
+        ) as publish_realtime:
             from frappe_whatsapp.utils.webhook import webhook
             webhook()
 
@@ -460,7 +462,15 @@ class TestWebhookEndpoint(IntegrationTestCase):
         )
         self.assertEqual(incoming.flow, correct_flow.name)
         self.assertEqual(incoming.flow_token, token)
+        self.assertEqual(incoming.message, "Flow completed")
         self.assertEqual(json.loads(incoming.flow_response), response_data)
+        flow_events = [
+            call
+            for call in publish_realtime.call_args_list
+            if call.args and call.args[0] == "whatsapp_flow_response"
+        ]
+        self.assertEqual(len(flow_events), 1)
+        self.assertEqual(flow_events[0].args[1], {"message": incoming.name})
 
     def test_webhook_post_status_update(self):
         """Test POST webhook with status update (no messages)."""

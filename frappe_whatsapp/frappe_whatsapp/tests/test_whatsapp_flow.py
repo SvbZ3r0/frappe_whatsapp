@@ -614,6 +614,34 @@ class TestFlowEndpoint(FrappeTestCase):
             {"version": "3.0", "screen": "SUMMARY", "data": {"result": 42}},
         )
 
+    def test_protocol_error_logs_only_structural_diagnostics(self):
+        from frappe_whatsapp.frappe_whatsapp.api.flow_endpoint import (
+            FlowProtocolError,
+            log_protocol_error,
+        )
+
+        diagnostics = {
+            "flow": "Example Registration",
+            "whatsapp_account": "Test Account",
+            "action": "data_exchange",
+            "screen": "DETAILS",
+            "data": {"sensitive_field": "private-value"},
+            "flow_token": "secret-token",
+        }
+        with patch("frappe.log_error") as log_error:
+            log_protocol_error(
+                FlowProtocolError("Unsupported Flow action"),
+                "WhatsApp Flow Protocol Error",
+                diagnostics,
+            )
+
+        logged_message = log_error.call_args.args[0]
+        self.assertIn("flow=Example Registration", logged_message)
+        self.assertIn("action=data_exchange", logged_message)
+        self.assertIn("screen=DETAILS", logged_message)
+        self.assertNotIn("private-value", logged_message)
+        self.assertNotIn("secret-token", logged_message)
+
     def test_compares_public_keys_cryptographically(self):
         from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_account.whatsapp_account import (
             public_keys_match,

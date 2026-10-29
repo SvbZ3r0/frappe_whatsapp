@@ -35,6 +35,7 @@ def get():
 
 	return Response(hub_challenge, status=200)
 
+
 def post():
 	"""Post."""
 	data = frappe.local.form_dict
@@ -152,18 +153,11 @@ def post():
 						flow_token, whatsapp_account.name
 					)
 
-					# Create a summary message from the flow response
-					summary_parts = []
-					for key, value in flow_response.items():
-						if value:
-							summary_parts.append(f"{key}: {value}")
-					summary_message = ", ".join(summary_parts) if summary_parts else "Flow completed"
-
 					msg_doc = frappe.get_doc({
 						"doctype": "WhatsApp Message",
 						"type": "Incoming",
 						"from": message['from'],
-						"message": summary_message,
+						"message": _("Flow completed"),
 						"message_id": message['id'],
 						"reply_to_message_id": reply_to_message_id,
 						"is_reply": is_reply,
@@ -175,17 +169,11 @@ def post():
 						"whatsapp_account": whatsapp_account.name
 					}).insert(ignore_permissions=True)
 
-					# Publish realtime event for flow response
-					frappe.publish_realtime(  # nosemgrep: frappe-realtime-pick-room -- intentional site-wide fan-out for chat UIs (whatsapp_chat companion app) listening for inbound flow responses
+					# Notify clients by identifier only. Authorized clients must fetch the
+					# document through normal Frappe permissions to read flow_response.
+					frappe.publish_realtime(
 						"whatsapp_flow_response",
-						{
-							"phone": message['from'],
-							"message_id": message['id'],
-							"flow": outgoing_flow.get("flow") if outgoing_flow else None,
-							"flow_token": flow_token,
-							"flow_response": flow_response,
-							"whatsapp_account": whatsapp_account.name
-						}
+						{"message": msg_doc.name},
 					)
 			# NEW: Handle Shopping Cart / Orders from MPM
 			elif message_type == 'order':
