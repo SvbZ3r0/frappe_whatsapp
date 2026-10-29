@@ -57,8 +57,12 @@ def handle_flow_request(flow=None, whatsapp_account=None):
 		validate_request_signature(raw_body, account)
 
 		flow_doc = resolve_flow(decrypted, account, flow)
+		validate_data_api_version(decrypted, flow_doc)
 		context = normalize_context(decrypted, flow_doc, account)
 		ordinary_response = dispatch_data_exchange(context, flow_doc)
+		ordinary_response = format_protocol_response(
+			ordinary_response, decrypted, flow_doc
+		)
 		encrypted_response = encrypt_response(
 			ordinary_response, aes_key, initial_vector
 		)
@@ -229,6 +233,26 @@ def normalize_context(decrypted, flow_doc, account):
 		"flow_token": decrypted.get("flow_token"),
 		"data": data,
 	}
+
+
+def validate_data_api_version(decrypted, flow_doc):
+	"""Reject requests using a protocol version different from the Flow."""
+	if not flow_doc:
+		return
+	if not decrypted.get("version"):
+		raise FlowProtocolError("Flow Data API version is required")
+	expected = flow_doc.data_api_version or "3.0"
+	if decrypted["version"] != expected:
+		raise FlowProtocolError("Unsupported Flow Data API version")
+
+
+def format_protocol_response(response, request, flow_doc):
+	"""Add Meta's protocol version without exposing it to app handlers."""
+	if request.get("action") == "ping":
+		return response
+	formatted = dict(response)
+	formatted["version"] = flow_doc.data_api_version or "3.0"
+	return formatted
 
 
 def dispatch_data_exchange(context, flow_doc=None):

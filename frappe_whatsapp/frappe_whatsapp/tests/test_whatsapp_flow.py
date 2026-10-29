@@ -44,7 +44,8 @@ class TestWhatsAppFlow(FrappeTestCase):
             "flow_name": flow_name,
             "whatsapp_account": "Test Account",
             "category": "OTHER",
-            "data_api_version": "7.3",
+            "flow_json_version": "7.3",
+            "data_api_version": "3.0",
             "screens": screens_data,
             "fields": fields_data
         })
@@ -321,6 +322,32 @@ class TestWhatsAppFlow(FrappeTestCase):
         self.assertIn("version", flow_json)
         self.assertIn("screens", flow_json)
 
+    def test_dynamic_flow_has_separate_schema_and_protocol_versions(self):
+        """Endpoint-backed JSON must declare both version concepts."""
+        flow = frappe.get_doc({
+            "doctype": "WhatsApp Flow",
+            "flow_name": "Test Dynamic Versions",
+            "whatsapp_account": "Test Account",
+            "category": "OTHER",
+            "flow_json_version": "7.3",
+            "data_api_version": "3.0",
+            "handler_key": "test_dynamic",
+            "screens": [
+                {"screen_id": "DETAILS", "screen_title": "Details", "terminal": 0},
+                {"screen_id": "SUMMARY", "screen_title": "Summary", "terminal": 1},
+            ],
+            "fields": [],
+        })
+        flow.insert(ignore_permissions=True)
+
+        flow_json = json.loads(flow.flow_json)
+        self.assertEqual(flow_json["version"], "7.3")
+        self.assertEqual(flow_json["data_api_version"], "3.0")
+        self.assertEqual(
+            flow_json["routing_model"],
+            {"DETAILS": ["SUMMARY"], "SUMMARY": []},
+        )
+
     def test_conditional_routes_generate_meta_if_component(self):
         """Structured branches compile to a client-side Meta If component."""
         flow = frappe.get_doc({
@@ -328,7 +355,8 @@ class TestWhatsAppFlow(FrappeTestCase):
             "flow_name": "Test Conditional Branch",
             "whatsapp_account": "Test Account",
             "category": "OTHER",
-            "data_api_version": "7.3",
+            "flow_json_version": "7.3",
+            "data_api_version": "3.0",
             "screens": [
                 {"screen_id": "CHOICE", "screen_title": "Choose", "terminal": 0},
                 {"screen_id": "BUSINESS", "screen_title": "Business", "terminal": 1},
@@ -376,7 +404,8 @@ class TestWhatsAppFlow(FrappeTestCase):
     def test_raw_json_is_preserved(self):
         """Advanced Meta JSON must not be flattened by before_save."""
         raw_json = {
-            "version": "7.3",
+            "version": "7.2",
+            "data_api_version": "3.0",
             "screens": [{
                 "id": "RAW_SCREEN",
                 "title": "Raw",
@@ -402,6 +431,8 @@ class TestWhatsAppFlow(FrappeTestCase):
         })
         flow.insert(ignore_permissions=True)
         self.assertEqual(json.loads(flow.flow_json), raw_json)
+        self.assertEqual(flow.flow_json_version, "7.2")
+        self.assertEqual(flow.data_api_version, "3.0")
 
     def test_phone_number_availability(self):
         """Selected availability allows only configured numbers in the WABA."""
@@ -558,6 +589,30 @@ class TestFlowEndpoint(FrappeTestCase):
 
         self.assertTrue(verify_signature(payload, signature, "secret"))
         self.assertFalse(verify_signature(payload, signature, "wrong-secret"))
+
+    def test_validates_and_formats_data_api_version(self):
+        from frappe_whatsapp.frappe_whatsapp.api.flow_endpoint import (
+            FlowProtocolError,
+            format_protocol_response,
+            validate_data_api_version,
+        )
+
+        flow = frappe._dict(data_api_version="3.0")
+        validate_data_api_version({"version": "3.0"}, flow)
+        with self.assertRaises(FlowProtocolError):
+            validate_data_api_version({}, flow)
+        with self.assertRaises(FlowProtocolError):
+            validate_data_api_version({"version": "2.0"}, flow)
+
+        response = format_protocol_response(
+            {"screen": "SUMMARY", "data": {"result": 42}},
+            {"action": "data_exchange"},
+            flow,
+        )
+        self.assertEqual(
+            response,
+            {"version": "3.0", "screen": "SUMMARY", "data": {"result": 42}},
+        )
 
     def test_compares_public_keys_cryptographically(self):
         from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_account.whatsapp_account import (

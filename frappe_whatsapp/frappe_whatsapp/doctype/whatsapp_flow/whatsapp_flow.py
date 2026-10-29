@@ -42,7 +42,13 @@ class WhatsAppFlow(Document):
     def validate(self):
         """Validate flow configuration."""
         if self.authoring_mode == "Raw JSON":
-            self.get_raw_flow_json()
+            raw_flow_json = self.get_raw_flow_json()
+            self.flow_json_version = raw_flow_json.get(
+                "version", self.flow_json_version or "7.3"
+            )
+            self.data_api_version = raw_flow_json.get(
+                "data_api_version", self.data_api_version or "3.0"
+            )
         else:
             self.validate_screens()
             self.validate_routes()
@@ -262,15 +268,15 @@ class WhatsAppFlow(Document):
         return graph
 
     def generate_flow_json(self):
-        """Generate WhatsApp Flow JSON from DocType configuration.
-
-        Generates a client-only flow (no endpoint required).
-        Data is collected and returned via webhook when flow completes.
-        """
+        """Generate static or endpoint-backed Flow JSON from configuration."""
         flow = {
-            "version": self.data_api_version or "6.0",
+            "version": self.flow_json_version or "7.3",
             "screens": []
         }
+
+        if self.handler_key:
+            flow["data_api_version"] = self.data_api_version or "3.0"
+            flow["routing_model"] = self.get_route_graph()
 
         # Build a graph-aware map of fields that may arrive from ancestor screens.
         screen_incoming_data = self.build_screen_data_map()
@@ -278,9 +284,6 @@ class WhatsAppFlow(Document):
         for screen in self.screens:
             screen_data = self.build_screen(screen, screen_incoming_data.get(screen.screen_id, {}))
             flow["screens"].append(screen_data)
-
-        # Client-side branches compile to If components and do not require a
-        # data endpoint or routing_model.
 
         return flow
 
@@ -863,6 +866,12 @@ class WhatsAppFlow(Document):
             if data.get("data_channel_uri"):
                 self.endpoint_uri = data["data_channel_uri"]
                 changed = True
+            if data.get("json_version"):
+                self.flow_json_version = data["json_version"]
+                changed = True
+            if data.get("data_api_version"):
+                self.data_api_version = data["data_api_version"]
+                changed = True
             if changed:
                 self.save()
 
@@ -902,7 +911,7 @@ class WhatsAppFlow(Document):
         token = account.get_password("token")
 
         # Get flow details
-        url = f"{account.url}/{account.version}/{self.flow_id}?fields=id,name,status,categories,json_version,data_channel_uri,preview"
+        url = f"{account.url}/{account.version}/{self.flow_id}?fields=id,name,status,categories,json_version,data_api_version,data_channel_uri,preview"
 
         headers = {
             "Authorization": f"Bearer {token}"
@@ -921,7 +930,9 @@ class WhatsAppFlow(Document):
             if data.get("categories"):
                 self.category = data["categories"][0] if data["categories"] else "OTHER"
             if data.get("json_version"):
-                self.data_api_version = data["json_version"]
+                self.flow_json_version = data["json_version"]
+            if data.get("data_api_version"):
+                self.data_api_version = data["data_api_version"]
             if data.get("data_channel_uri"):
                 self.endpoint_uri = data["data_channel_uri"]
             if data.get("preview", {}).get("preview_url"):
@@ -992,7 +1003,7 @@ def get_whatsapp_flows(whatsapp_account):
     account = frappe.get_doc("WhatsApp Account", whatsapp_account)
     token = account.get_password("token")
 
-    url = f"{account.url}/{account.version}/{account.business_id}/flows?fields=id,name,status,categories,data_channel_uri"
+    url = f"{account.url}/{account.version}/{account.business_id}/flows?fields=id,name,status,categories,json_version,data_api_version,data_channel_uri"
 
     headers = {
         "Authorization": f"Bearer {token}"
@@ -1039,7 +1050,7 @@ def import_flow_from_whatsapp(whatsapp_account, flow_id, flow_name=None):
     token = account.get_password("token")
 
     # Get flow details
-    url = f"{account.url}/{account.version}/{flow_id}?fields=id,name,status,categories,json_version,data_channel_uri,preview"
+    url = f"{account.url}/{account.version}/{flow_id}?fields=id,name,status,categories,json_version,data_api_version,data_channel_uri,preview"
 
     headers = {
         "Authorization": f"Bearer {token}"
@@ -1061,7 +1072,8 @@ def import_flow_from_whatsapp(whatsapp_account, flow_id, flow_name=None):
             "status": data.get("status", "Draft").title(),
             "authoring_mode": "Raw JSON",
             "category": data["categories"][0] if data.get("categories") else "OTHER",
-            "data_api_version": data.get("json_version", "6.0"),
+            "flow_json_version": data.get("json_version", "7.3"),
+            "data_api_version": data.get("data_api_version", "3.0"),
             "endpoint_uri": data.get("data_channel_uri", ""),
             "preview_url": data.get("preview", {}).get("preview_url", "")
         })
@@ -1133,7 +1145,7 @@ def sync_all_flows(whatsapp_account):
     account = frappe.get_doc("WhatsApp Account", whatsapp_account)
     token = account.get_password("token")
 
-    url = f"{account.url}/{account.version}/{account.business_id}/flows?fields=id,name,status,categories,data_channel_uri"
+    url = f"{account.url}/{account.version}/{account.business_id}/flows?fields=id,name,status,categories,json_version,data_api_version,data_channel_uri"
 
     headers = {
         "Authorization": f"Bearer {token}"
@@ -1165,12 +1177,19 @@ def sync_all_flows(whatsapp_account):
                         flow_doc.category = flow["categories"][0]
                     if flow.get("data_channel_uri"):
                         flow_doc.endpoint_uri = flow["data_channel_uri"]
+                    if flow.get("json_version"):
+                        flow_doc.flow_json_version = flow["json_version"]
+                    if flow.get("data_api_version"):
+                        flow_doc.data_api_version = flow["data_api_version"]
 
                     # Try to fetch flow JSON and update screens/fields
                     flow_json = fetch_flow_json_by_id(whatsapp_account, flow_id)
                     if flow_json:
                         flow_doc.flow_json = json.dumps(flow_json, indent=2)
-                        flow_doc.data_api_version = flow_json.get("version", "6.0")
+                        flow_doc.flow_json_version = flow_json.get("version", "7.3")
+                        flow_doc.data_api_version = flow_json.get(
+                            "data_api_version", flow_doc.data_api_version or "3.0"
+                        )
                         if flow_doc.authoring_mode == "Raw JSON":
                             # Keep a read-only summary while preserving the full asset.
                             flow_doc.screens = []
@@ -1195,6 +1214,8 @@ def sync_all_flows(whatsapp_account):
                         "status": flow.get("status", "Draft").title(),
                         "authoring_mode": "Raw JSON",
                         "category": flow["categories"][0] if flow.get("categories") else "OTHER",
+                        "flow_json_version": flow.get("json_version", "7.3"),
+                        "data_api_version": flow.get("data_api_version", "3.0"),
                         "endpoint_uri": flow.get("data_channel_uri", "")
                     })
 
@@ -1202,7 +1223,10 @@ def sync_all_flows(whatsapp_account):
                     flow_json = fetch_flow_json_by_id(whatsapp_account, flow_id)
                     if flow_json:
                         flow_doc.flow_json = json.dumps(flow_json, indent=2)
-                        flow_doc.data_api_version = flow_json.get("version", "6.0")
+                        flow_doc.flow_json_version = flow_json.get("version", "7.3")
+                        flow_doc.data_api_version = flow_json.get(
+                            "data_api_version", flow_doc.data_api_version or "3.0"
+                        )
                         parse_flow_json_to_screens(flow_doc, flow_json)
 
                     flow_doc.flags.ignore_validate = True

@@ -18,6 +18,7 @@
   "description",
   "column_break_2",
   "flow_cta",
+  "flow_json_version",
   "data_api_version",
   "availability_section",
   "availability_mode",
@@ -112,11 +113,22 @@
    "label": "Call to Action"
   },
   {
-   "default": "6.0",
-   "fieldname": "data_api_version",
+   "default": "7.3",
+   "description": "Schema version used by the Flow JSON version property",
+   "fieldname": "flow_json_version",
    "fieldtype": "Select",
    "label": "Flow JSON Version",
-   "options": "7.3\n7.2\n7.1\n7.0\n6.3\n6.2\n6.1\n6.0\n5.1"
+   "options": "7.3\n7.2\n7.1\n7.0\n6.3\n6.2\n6.1\n6.0\n5.1",
+   "reqd": 1
+  },
+  {
+   "default": "3.0",
+   "description": "Protocol version used for encrypted Data Exchange requests and responses",
+   "fieldname": "data_api_version",
+   "fieldtype": "Select",
+   "label": "Data API Version",
+   "options": "3.0",
+   "reqd": 1
   },
   {
    "fieldname": "availability_section",

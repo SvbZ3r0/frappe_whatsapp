@@ -142,6 +142,7 @@ Build interactive forms using WhatsApp's native Flow Builder. Flows provide a ri
 - Publish and manage flows directly from Frappe
 - Send flow messages and receive responses via webhook
 - Launch with `navigate` (default) or `data_exchange`, including an initial screen and JSON data
+- Separate Flow JSON schema and Data Exchange protocol versions
 
 **Supported Field Types:**
 - TextInput, TextArea
