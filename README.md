@@ -168,7 +168,7 @@ Build interactive forms using WhatsApp's native Flow Builder. Flows provide a ri
 
 **Encrypted Data Exchange:**
 
-1. In **WhatsApp Account**, use **Flows > Generate Flow Encryption Keys**, then **Register Flow Public Key** and **Verify Flow Public Key**. Verification requires both Meta's `VALID` signature status and an exact cryptographic match with the locally stored public key. Add the Meta App Secret and enable request-signature enforcement for production. The private key, optional passphrase, and app secret are protected Password fields and are never written to protocol logs.
+1. In **WhatsApp Account**, use **Flows > Generate Flow Encryption Keys**, then **Register Flow Public Key** and **Verify Flow Public Key**. Verification requires both Meta's `VALID` signature status and an exact cryptographic match with the locally stored public key. Add the Meta App Secret; request-signature enforcement defaults on and cannot be disabled outside developer mode. The private key, optional passphrase, and app secret are protected Password fields and are never written to protocol logs.
 2. Set the Flow's **Backend Handler Key**. The app generates a Flow-specific **Data Endpoint URI** using the current site URL and a URL-encoded `flow` hint. You may supply a different base URI; the Flow hint is added or replaced automatically. **Create on WhatsApp**, **Update Flow Metadata**, and **Upload Flow JSON** register the resulting URI with Meta.
 3. Map the same handler key to a trusted method in an installed app's `hooks.py`:
 
@@ -194,6 +194,8 @@ def handle_whatsapp_flow(context):
 ```
 
 Completed Flow answers are stored structurally in `WhatsApp Message.flow_response`; the message summary is neutral and realtime notifications contain only the incoming document name. `WhatsApp Notification Log` remains the intentional raw webhook receipt and should be governed by normal ERP permissions and retention rules.
+
+For `INIT`, `data_exchange`, and `BACK`, the encrypted `flow_token` must match a persisted outgoing Flow message on the identified WhatsApp Account. The Flow-specific URL hint is used only for encrypted `ping` health checks.
 
 ### Sync from Meta
 

@@ -12,6 +12,7 @@ import re
 
 import frappe
 from frappe import _
+from frappe.utils import cint
 from werkzeug.wrappers import Response
 
 from cryptography.exceptions import InvalidTag
@@ -30,6 +31,10 @@ class FlowDecryptionError(FlowProtocolError):
 
 class FlowSignatureError(FlowProtocolError):
 	"""Meta request signature validation failed."""
+
+
+class FlowTokenError(FlowProtocolError):
+	"""The request is not correlated to a persisted Flow launch."""
 
 
 @frappe.whitelist(allow_guest=True)
@@ -81,6 +86,9 @@ def handle_flow_request(flow=None, whatsapp_account=None):
 	except FlowSignatureError as exc:
 		log_protocol_error(exc, "WhatsApp Flow Signature Error", diagnostics)
 		return Response("", status=432, content_type="text/plain")
+	except FlowTokenError as exc:
+		log_protocol_error(exc, "WhatsApp Flow Token Error", diagnostics)
+		return Response("", status=427, content_type="text/plain")
 	except FlowDecryptionError as exc:
 		log_protocol_error(exc, "WhatsApp Flow Decryption Error", diagnostics)
 		return Response("", status=421, content_type="text/plain")
@@ -177,7 +185,7 @@ def decrypt_request(envelope, private_key_pem, passphrase=None):
 def validate_request_signature(raw_body, account):
 	"""Validate X-Hub-Signature-256 when supplied or required by the account."""
 	signature = frappe.request.headers.get("X-Hub-Signature-256")
-	required = bool(account.require_flow_request_signature)
+	required = is_request_signature_required(account)
 	if not signature and not required:
 		return
 
@@ -186,6 +194,12 @@ def validate_request_signature(raw_body, account):
 		raise FlowSignatureError("Missing Meta request signature configuration")
 	if not verify_signature(raw_body, signature, app_secret):
 		raise FlowSignatureError("Invalid Meta request signature")
+
+
+def is_request_signature_required(account):
+	"""Require Meta authentication in production; allow an explicit dev opt-out."""
+	developer_mode = bool(cint(frappe.conf.get("developer_mode")))
+	return bool(account.require_flow_request_signature) or not developer_mode
 
 
 def verify_signature(payload, signature, app_secret):
@@ -199,10 +213,17 @@ def verify_signature(payload, signature, app_secret):
 
 
 def resolve_flow(decrypted, account, flow_hint=None):
-	"""Resolve the Flow from an explicit hint and/or the persisted launch token."""
-	flow_token = decrypted.get("flow_token")
-	correlated_flow = None
-	if flow_token:
+	"""Resolve pings by hint and all business actions by persisted launch token."""
+	action = decrypted.get("action")
+	if action == "ping":
+		if not flow_hint:
+			return None
+		flow_name = flow_hint
+	else:
+		flow_token = decrypted.get("flow_token")
+		if not flow_token:
+			raise FlowTokenError("Flow token is required")
+
 		matches = frappe.get_all(
 			"WhatsApp Message",
 			filters={
@@ -215,16 +236,12 @@ def resolve_flow(decrypted, account, flow_hint=None):
 			order_by="creation desc",
 			limit=1,
 		)
-		if matches:
-			correlated_flow = matches[0].flow
+		if not matches or not matches[0].flow:
+			raise FlowTokenError("Flow token does not match a persisted launch")
+		flow_name = matches[0].flow
+		if flow_hint and flow_hint != flow_name:
+			raise FlowTokenError("Flow hint does not match the persisted launch token")
 
-	if flow_hint and correlated_flow and flow_hint != correlated_flow:
-		raise FlowProtocolError("Flow hint does not match the persisted launch token")
-	flow_name = correlated_flow or flow_hint
-	if not flow_name:
-		if decrypted.get("action") == "ping":
-			return None
-		raise FlowProtocolError("Unable to identify Flow from request")
 	if not frappe.db.exists("WhatsApp Flow", flow_name):
 		raise FlowProtocolError("Unknown WhatsApp Flow")
 

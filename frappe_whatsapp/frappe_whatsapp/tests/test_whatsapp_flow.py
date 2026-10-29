@@ -895,7 +895,9 @@ class TestFlowEndpoint(FrappeTestCase):
         ) as get_all, patch("frappe.db.exists", return_value=True), patch(
             "frappe.get_doc", return_value=flow
         ):
-            resolved = resolve_flow({"flow_token": "token-1"}, account)
+            resolved = resolve_flow(
+                {"action": "INIT", "flow_token": "token-1"}, account
+            )
 
         self.assertEqual(resolved.name, "Example Registration")
         self.assertEqual(
@@ -908,8 +910,11 @@ class TestFlowEndpoint(FrappeTestCase):
             },
         )
 
-    def test_resolves_flow_from_flow_specific_endpoint_hint(self):
-        from frappe_whatsapp.frappe_whatsapp.api.flow_endpoint import resolve_flow
+    def test_flow_hint_is_accepted_only_for_ping(self):
+        from frappe_whatsapp.frappe_whatsapp.api.flow_endpoint import (
+            FlowTokenError,
+            resolve_flow,
+        )
 
         account = frappe._dict(name="Test Account")
         flow = frappe._dict(name="Example Registration")
@@ -918,12 +923,44 @@ class TestFlowEndpoint(FrappeTestCase):
         with patch("frappe.db.exists", return_value=True), patch(
             "frappe.get_doc", return_value=flow
         ), patch("frappe.get_all") as get_all:
+            with self.assertRaises(FlowTokenError):
+                resolve_flow(
+                    {"action": "INIT"}, account, flow_hint="Example Registration"
+                )
             resolved = resolve_flow(
-                {"action": "INIT"}, account, flow_hint="Example Registration"
+                {"action": "ping"}, account, flow_hint="Example Registration"
             )
 
         self.assertEqual(resolved.name, "Example Registration")
         get_all.assert_not_called()
+
+    def test_unknown_flow_token_fails_closed(self):
+        from frappe_whatsapp.frappe_whatsapp.api.flow_endpoint import (
+            FlowTokenError,
+            resolve_flow,
+        )
+
+        account = frappe._dict(name="Test Account")
+        with patch("frappe.get_all", return_value=[]):
+            with self.assertRaises(FlowTokenError):
+                resolve_flow(
+                    {"action": "data_exchange", "flow_token": "unknown"},
+                    account,
+                    flow_hint="Example Registration",
+                )
+
+    def test_request_signatures_are_mandatory_outside_developer_mode(self):
+        from frappe_whatsapp.frappe_whatsapp.api.flow_endpoint import (
+            is_request_signature_required,
+        )
+
+        account = frappe._dict(require_flow_request_signature=0)
+        with patch.dict(frappe.conf, {"developer_mode": 0}):
+            self.assertTrue(is_request_signature_required(account))
+        with patch.dict(frappe.conf, {"developer_mode": 1}):
+            self.assertFalse(is_request_signature_required(account))
+            account.require_flow_request_signature = 1
+            self.assertTrue(is_request_signature_required(account))
 
     def test_ping_has_a_builtin_response(self):
         from frappe_whatsapp.frappe_whatsapp.api.flow_endpoint import dispatch_data_exchange

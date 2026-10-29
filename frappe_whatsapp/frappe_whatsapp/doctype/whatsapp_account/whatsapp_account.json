@@ -168,8 +168,8 @@
    "label": "Meta App Secret"
   },
   {
-   "default": "0",
-   "description": "Reject unsigned Flow endpoint requests. Enable in production after configuring the Meta App Secret.",
+   "default": "1",
+   "description": "Reject unsigned Flow endpoint requests. This is always enforced outside developer mode, even for legacy accounts where this field is disabled.",
    "fieldname": "require_flow_request_signature",
    "fieldtype": "Check",
    "label": "Require Flow Request Signature"
