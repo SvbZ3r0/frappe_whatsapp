@@ -202,10 +202,11 @@
    "label": "Advanced"
   },
   {
-   "description": "For dynamic data flows that require server interaction",
+   "description": "Registered with Meta for dynamic Flows. Selecting a Backend Handler Key generates the app endpoint automatically and adds this Flow as a URL-encoded query parameter.",
    "fieldname": "endpoint_uri",
    "fieldtype": "Data",
-   "label": "Data Endpoint URI"
+   "label": "Data Endpoint URI",
+   "options": "URL"
   },
   {
    "description": "Non-executable key mapped to one trusted installed-app method through the whatsapp_flow_handlers hook",

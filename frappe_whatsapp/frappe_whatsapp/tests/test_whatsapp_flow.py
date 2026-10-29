@@ -713,6 +713,92 @@ class TestFlowEndpoint(FrappeTestCase):
         flow.handler_key = "example_handler"
         WhatsAppFlow.validate_handler_key(flow)
 
+    def test_builds_flow_specific_endpoint_uri_idempotently(self):
+        from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_flow.whatsapp_flow import (
+            build_flow_endpoint_uri,
+        )
+
+        endpoint = build_flow_endpoint_uri(
+            "https://example.com/flow?tenant=one&flow=Old+Flow",
+            "Example Registration",
+        )
+
+        self.assertEqual(
+            endpoint,
+            "https://example.com/flow?tenant=one&flow=Example+Registration",
+        )
+        self.assertEqual(build_flow_endpoint_uri(endpoint, "Example Registration"), endpoint)
+
+    def test_dynamic_flow_generates_app_endpoint_and_meta_payload(self):
+        from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_flow.whatsapp_flow import (
+            WhatsAppFlow,
+        )
+
+        flow = frappe._dict(
+            name="Example Registration",
+            flow_name="Example Registration",
+            category="OTHER",
+            handler_key="example_handler",
+            endpoint_uri=None,
+        )
+        with patch(
+            "frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_flow.whatsapp_flow.get_url",
+            return_value="https://example.com/api/method/flow_endpoint",
+        ):
+            WhatsAppFlow.configure_endpoint_uri(flow)
+
+        payload = WhatsAppFlow.get_meta_metadata_payload(flow)
+        self.assertEqual(
+            flow.endpoint_uri,
+            "https://example.com/api/method/flow_endpoint?flow=Example+Registration",
+        )
+        self.assertEqual(payload["endpoint_uri"], flow.endpoint_uri)
+
+    def test_create_and_update_send_endpoint_uri_to_meta(self):
+        from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_flow.whatsapp_flow import (
+            WhatsAppFlow,
+        )
+
+        endpoint_uri = "https://example.com/flow?flow=Example+Registration"
+        payload = {
+            "name": "Example Registration",
+            "categories": ["OTHER"],
+            "endpoint_uri": endpoint_uri,
+        }
+        account = frappe._dict(
+            url="https://graph.facebook.com",
+            version="v18.0",
+            business_id="waba-1",
+        )
+        account.get_password = MagicMock(return_value="redacted-token")
+        flow = MagicMock(
+            flow_id=None,
+            whatsapp_account="Test Account",
+        )
+        flow.get_meta_metadata_payload.return_value = payload
+
+        with patch("frappe.get_doc", return_value=account), patch(
+            "frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_flow.whatsapp_flow.make_post_request",
+            return_value={"id": "meta-flow-1"},
+        ) as post, patch("frappe.msgprint"):
+            WhatsAppFlow.create_on_whatsapp(flow)
+
+        self.assertEqual(json.loads(post.call_args.kwargs["data"]), payload)
+        flow.upload_flow_json.assert_called_once_with(update_metadata=False)
+
+        flow.flow_id = "meta-flow-1"
+        with patch("frappe.get_doc", return_value=account), patch(
+            "frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_flow.whatsapp_flow.make_post_request",
+            return_value={"success": True},
+        ) as post, patch("frappe.msgprint"):
+            WhatsAppFlow.update_flow_metadata(flow)
+
+        self.assertEqual(
+            post.call_args.args[0],
+            "https://graph.facebook.com/v18.0/meta-flow-1",
+        )
+        self.assertEqual(json.loads(post.call_args.kwargs["data"]), payload)
+
     def test_resolves_flow_by_token_and_account(self):
         from frappe_whatsapp.frappe_whatsapp.api.flow_endpoint import resolve_flow
 
@@ -738,6 +824,23 @@ class TestFlowEndpoint(FrappeTestCase):
                 "whatsapp_account": "Test Account",
             },
         )
+
+    def test_resolves_flow_from_flow_specific_endpoint_hint(self):
+        from frappe_whatsapp.frappe_whatsapp.api.flow_endpoint import resolve_flow
+
+        account = frappe._dict(name="Test Account")
+        flow = frappe._dict(name="Example Registration")
+        flow.is_available_on = lambda account_name: account_name == "Test Account"
+
+        with patch("frappe.db.exists", return_value=True), patch(
+            "frappe.get_doc", return_value=flow
+        ), patch("frappe.get_all") as get_all:
+            resolved = resolve_flow(
+                {"action": "INIT"}, account, flow_hint="Example Registration"
+            )
+
+        self.assertEqual(resolved.name, "Example Registration")
+        get_all.assert_not_called()
 
     def test_ping_has_a_builtin_response(self):
         from frappe_whatsapp.frappe_whatsapp.api.flow_endpoint import dispatch_data_exchange

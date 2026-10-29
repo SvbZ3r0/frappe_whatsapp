@@ -45,6 +45,18 @@ frappe.ui.form.on("WhatsApp Flow", {
 
             // Upload JSON button (if flow exists but not published)
             if (frm.doc.flow_id && frm.doc.status === "Draft") {
+                frm.add_custom_button(__("Update Flow Metadata"), function() {
+                    frm.call({
+                        method: "update_flow_metadata",
+                        doc: frm.doc,
+                        freeze: true,
+                        freeze_message: __("Updating Flow metadata on Meta..."),
+                        callback: function() {
+                            frm.reload_doc();
+                        }
+                    });
+                }, __("Actions"));
+
                 frm.add_custom_button(__("Upload Flow JSON"), function() {
                     frm.call({
                         method: "upload_flow_json",

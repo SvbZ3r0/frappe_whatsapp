@@ -3,11 +3,32 @@
 
 import json
 import re
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.integrations.utils import make_post_request, make_request
+from frappe.utils import get_url
+
+
+FLOW_ENDPOINT_METHOD = (
+    "frappe_whatsapp.frappe_whatsapp.api.flow_endpoint.handle_flow_request"
+)
+
+
+def build_flow_endpoint_uri(endpoint_uri, flow_name):
+    """Add exactly one URL-encoded Flow hint while preserving other query values."""
+    parts = urlsplit(endpoint_uri)
+    query = [
+        (key, value)
+        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        if key != "flow"
+    ]
+    query.append(("flow", flow_name))
+    return urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)
+    )
 
 
 class WhatsAppFlow(Document):
@@ -27,6 +48,7 @@ class WhatsAppFlow(Document):
             self.validate_routes()
         self.validate_available_accounts()
         self.validate_handler_key()
+        self.configure_endpoint_uri()
 
     def validate_handler_key(self):
         """Keep handler selection declarative and unsuitable for method paths."""
@@ -38,6 +60,33 @@ class WhatsAppFlow(Document):
                     "Backend Handler Key may contain only lowercase letters, numbers, underscores, and hyphens"
                 )
             )
+
+    def configure_endpoint_uri(self):
+        """Generate and persist the exact Flow-specific endpoint Meta should call."""
+        if not self.handler_key:
+            return
+        base_uri = self.endpoint_uri or get_url(f"/api/method/{FLOW_ENDPOINT_METHOD}")
+        self.endpoint_uri = build_flow_endpoint_uri(
+            base_uri, self.name or self.flow_name
+        )
+
+    def get_meta_metadata_payload(self):
+        """Return metadata accepted by Meta's create and update Flow APIs."""
+        if self.handler_key and not self.endpoint_uri:
+            self.configure_endpoint_uri()
+        payload = {
+            "name": self.flow_name,
+            "categories": [self.category],
+        }
+        if self.endpoint_uri:
+            endpoint_uri = build_flow_endpoint_uri(
+                self.endpoint_uri, self.name or self.flow_name
+            )
+            endpoint_parts = urlsplit(endpoint_uri)
+            if endpoint_parts.scheme != "https" or not endpoint_parts.netloc:
+                frappe.throw(_("Data Endpoint URI must be an absolute HTTPS URL"))
+            payload["endpoint_uri"] = endpoint_uri
+        return payload
 
     def get_raw_flow_json(self):
         """Return validated Flow JSON from the raw editor."""
@@ -533,10 +582,7 @@ class WhatsAppFlow(Document):
         # Create the flow
         url = f"{account.url}/{account.version}/{account.business_id}/flows"
 
-        payload = {
-            "name": self.flow_name,
-            "categories": [self.category]
-        }
+        payload = self.get_meta_metadata_payload()
 
         headers = {
             "Authorization": f"Bearer {token}",
@@ -549,7 +595,7 @@ class WhatsAppFlow(Document):
             self.save()
 
             # Upload the flow JSON
-            self.upload_flow_json()
+            self.upload_flow_json(update_metadata=False)
 
             frappe.msgprint(_("Flow created successfully on WhatsApp"))
 
@@ -557,7 +603,36 @@ class WhatsAppFlow(Document):
             frappe.throw(_("Failed to create flow: {0}").format(str(e)))
 
     @frappe.whitelist()
-    def upload_flow_json(self):
+    def update_flow_metadata(self, show_message=True):
+        """Update Flow name, category, and endpoint URI on Meta."""
+        if not self.flow_id:
+            frappe.throw(_("Flow must be created on WhatsApp first"))
+
+        account = frappe.get_doc("WhatsApp Account", self.whatsapp_account)
+        token = account.get_password("token")
+        url = f"{account.url}/{account.version}/{self.flow_id}"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            response = make_post_request(
+                url,
+                headers=headers,
+                data=json.dumps(self.get_meta_metadata_payload()),
+            )
+            if not response.get("success"):
+                frappe.throw(_("Meta did not accept the Flow metadata update"))
+            self.save()
+            if show_message:
+                frappe.msgprint(_("Flow metadata updated successfully on WhatsApp"))
+            return response
+        except Exception as e:
+            frappe.throw(_("Failed to update flow metadata: {0}").format(str(e)))
+
+    @frappe.whitelist()
+    def upload_flow_json(self, update_metadata=True):
         """Upload flow JSON to WhatsApp."""
         if not self.flow_id:
             frappe.throw(_("Flow must be created on WhatsApp first"))
@@ -586,6 +661,9 @@ class WhatsAppFlow(Document):
 
         try:
             import requests
+
+            if update_metadata:
+                self.update_flow_metadata(show_message=False)
             response = requests.post(url, headers=headers, files=files)
 
             if response.status_code != 200:
@@ -778,9 +856,14 @@ class WhatsAppFlow(Document):
 
             data = response.json()
 
-            # Update local status
+            changed = False
             if data.get("status"):
                 self.status = data["status"].title()
+                changed = True
+            if data.get("data_channel_uri"):
+                self.endpoint_uri = data["data_channel_uri"]
+                changed = True
+            if changed:
                 self.save()
 
             # Check for validation errors
@@ -819,7 +902,7 @@ class WhatsAppFlow(Document):
         token = account.get_password("token")
 
         # Get flow details
-        url = f"{account.url}/{account.version}/{self.flow_id}?fields=id,name,status,categories,json_version,preview"
+        url = f"{account.url}/{account.version}/{self.flow_id}?fields=id,name,status,categories,json_version,data_channel_uri,preview"
 
         headers = {
             "Authorization": f"Bearer {token}"
@@ -839,6 +922,8 @@ class WhatsAppFlow(Document):
                 self.category = data["categories"][0] if data["categories"] else "OTHER"
             if data.get("json_version"):
                 self.data_api_version = data["json_version"]
+            if data.get("data_channel_uri"):
+                self.endpoint_uri = data["data_channel_uri"]
             if data.get("preview", {}).get("preview_url"):
                 self.preview_url = data["preview"]["preview_url"]
 
@@ -907,7 +992,7 @@ def get_whatsapp_flows(whatsapp_account):
     account = frappe.get_doc("WhatsApp Account", whatsapp_account)
     token = account.get_password("token")
 
-    url = f"{account.url}/{account.version}/{account.business_id}/flows?fields=id,name,status,categories"
+    url = f"{account.url}/{account.version}/{account.business_id}/flows?fields=id,name,status,categories,data_channel_uri"
 
     headers = {
         "Authorization": f"Bearer {token}"
@@ -954,7 +1039,7 @@ def import_flow_from_whatsapp(whatsapp_account, flow_id, flow_name=None):
     token = account.get_password("token")
 
     # Get flow details
-    url = f"{account.url}/{account.version}/{flow_id}?fields=id,name,status,categories,json_version,preview"
+    url = f"{account.url}/{account.version}/{flow_id}?fields=id,name,status,categories,json_version,data_channel_uri,preview"
 
     headers = {
         "Authorization": f"Bearer {token}"
@@ -977,6 +1062,7 @@ def import_flow_from_whatsapp(whatsapp_account, flow_id, flow_name=None):
             "authoring_mode": "Raw JSON",
             "category": data["categories"][0] if data.get("categories") else "OTHER",
             "data_api_version": data.get("json_version", "6.0"),
+            "endpoint_uri": data.get("data_channel_uri", ""),
             "preview_url": data.get("preview", {}).get("preview_url", "")
         })
 
@@ -1047,7 +1133,7 @@ def sync_all_flows(whatsapp_account):
     account = frappe.get_doc("WhatsApp Account", whatsapp_account)
     token = account.get_password("token")
 
-    url = f"{account.url}/{account.version}/{account.business_id}/flows?fields=id,name,status,categories"
+    url = f"{account.url}/{account.version}/{account.business_id}/flows?fields=id,name,status,categories,data_channel_uri"
 
     headers = {
         "Authorization": f"Bearer {token}"
@@ -1077,6 +1163,8 @@ def sync_all_flows(whatsapp_account):
                     flow_doc.status = flow.get("status", "Draft").title()
                     if flow.get("categories"):
                         flow_doc.category = flow["categories"][0]
+                    if flow.get("data_channel_uri"):
+                        flow_doc.endpoint_uri = flow["data_channel_uri"]
 
                     # Try to fetch flow JSON and update screens/fields
                     flow_json = fetch_flow_json_by_id(whatsapp_account, flow_id)
@@ -1106,7 +1194,8 @@ def sync_all_flows(whatsapp_account):
                         "flow_id": flow_id,
                         "status": flow.get("status", "Draft").title(),
                         "authoring_mode": "Raw JSON",
-                        "category": flow["categories"][0] if flow.get("categories") else "OTHER"
+                        "category": flow["categories"][0] if flow.get("categories") else "OTHER",
+                        "endpoint_uri": flow.get("data_channel_uri", "")
                     })
 
                     # Try to fetch and parse flow JSON
