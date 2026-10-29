@@ -1163,6 +1163,9 @@ message.insert()</code></pre>
             <ul>
                 <li>Visual form builder with multiple screens</li>
                 <li>Support for text inputs, dropdowns, date pickers, and more</li>
+                <li>Conditional routing between screens</li>
+                <li>Structured authoring or direct editing of Meta Flow JSON</li>
+                <li>Per-phone-number availability within a WhatsApp Business Account</li>
                 <li>Client-only flows (no endpoint required)</li>
                 <li>Publish and manage flows directly from Frappe</li>
                 <li>Send flow messages and receive responses via webhook</li>
@@ -1175,8 +1178,11 @@ message.insert()</code></pre>
                 <li>Select the <strong>WhatsApp Account</strong></li>
                 <li>Choose a <strong>Category</strong> (e.g., APPOINTMENT_BOOKING, LEAD_GENERATION)</li>
                 <li>Add <strong>Screens</strong> to define the flow structure</li>
+                <li>Add optional <strong>Screen Routes</strong> for conditional branches and a default destination</li>
                 <li>Add <strong>Fields</strong> for each screen</li>
             </ol>
+
+            <p>Route conditions use Meta expressions such as <code>${form.customer_type} == 'business'</code>. Use <strong>Raw JSON</strong> authoring mode for advanced Meta components that are not represented by the structured tables. The <strong>Available On</strong> setting can expose a Flow to every configured phone number in its WABA or only selected numbers.</p>
 
             <h3>Supported Field Types</h3>
             <table>

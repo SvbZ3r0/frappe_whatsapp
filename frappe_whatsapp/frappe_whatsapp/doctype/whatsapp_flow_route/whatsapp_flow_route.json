@@ -1,0 +1,63 @@
+{
+ "actions": [],
+ "creation": "2026-10-29 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "source_screen",
+  "condition",
+  "is_default",
+  "destination_screen",
+  "button_label"
+ ],
+ "fields": [
+  {
+   "description": "Screen containing the branching footer",
+   "fieldname": "source_screen",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "From Screen",
+   "reqd": 1
+  },
+  {
+   "description": "Meta boolean expression, for example: ${form.selection} == 'option_a'",
+   "fieldname": "condition",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Condition"
+  },
+  {
+   "default": "0",
+   "description": "Fallback route when no condition matches",
+   "fieldname": "is_default",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Default"
+  },
+  {
+   "fieldname": "destination_screen",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "To Screen",
+   "reqd": 1
+  },
+  {
+   "default": "Continue",
+   "fieldname": "button_label",
+   "fieldtype": "Data",
+   "label": "Button Label"
+  }
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-10-29 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Frappe Whatsapp",
+ "name": "WhatsApp Flow Route",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

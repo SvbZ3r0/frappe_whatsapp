@@ -147,6 +147,12 @@ class WhatsAppMessage(Document):
 
                 if not flow_doc.flow_id:
                     frappe.throw(_("Flow must be created on WhatsApp before sending"))
+                if not flow_doc.is_available_on(self.whatsapp_account):
+                    frappe.throw(
+                        _("Flow {0} is not available on WhatsApp Account {1}").format(
+                            flow_doc.name, self.whatsapp_account
+                        )
+                    )
 
                 # Determine flow mode - draft flows can be tested with mode: "draft"
                 flow_mode = None
@@ -158,6 +164,10 @@ class WhatsAppMessage(Document):
                 flow_screen = self.flow_screen
                 if not flow_screen and flow_doc.screens:
                     flow_screen = flow_doc.screens[0].screen_id
+                if not flow_screen and flow_doc.authoring_mode == "Raw JSON":
+                    raw_screens = flow_doc.get_raw_flow_json().get("screens", [])
+                    if raw_screens:
+                        flow_screen = raw_screens[0].get("id")
 
                 data["type"] = "interactive"
                 data["interactive"] = {

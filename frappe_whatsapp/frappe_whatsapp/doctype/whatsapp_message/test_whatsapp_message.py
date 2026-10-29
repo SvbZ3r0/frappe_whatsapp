@@ -48,12 +48,12 @@ class TestWhatsAppMessage(IntegrationTestCase):
         })
 
     def tearDown(self):
-        for name in frappe.get_all("WhatsApp Message", filters={"to": ["like", "9199%"]}, pluck="name"):
-            frappe.delete_doc("WhatsApp Message", name, force=True)
-        for name in frappe.get_all("WhatsApp Message", filters={"from": ["like", "9199%"]}, pluck="name"):
-            frappe.delete_doc("WhatsApp Message", name, force=True)
-        for name in frappe.get_all("WhatsApp Profiles", filters={"number": ["like", "9199%"]}, pluck="name"):
-            frappe.delete_doc("WhatsApp Profiles", name, force=True)
+        frappe.db.delete(
+            "WhatsApp Message", {"whatsapp_account": "Test WA Msg Account"}
+        )
+        frappe.db.delete(
+            "WhatsApp Profiles", {"whatsapp_account": "Test WA Msg Account"}
+        )
         frappe.db.commit()  # nosemgrep: frappe-manual-commit -- test fixture must be visible to later queries
 
     def test_incoming_message_creation(self):
@@ -369,7 +369,7 @@ class TestWhatsAppMessage(IntegrationTestCase):
                 {
                     "button_type": "Call Phone",
                     "button_label": "Call Us",
-                    "phone_number": "+919876543210",
+                    "phone_number": "+15555550107",
                 },
                 {
                     "button_type": "Visit Website",

@@ -13,13 +13,19 @@
   "status",
   "flow_id",
   "section_break_settings",
+  "authoring_mode",
   "category",
   "description",
   "column_break_2",
   "flow_cta",
   "data_api_version",
+  "availability_section",
+  "availability_mode",
+  "available_accounts",
   "section_break_screens",
   "screens",
+  "section_break_routes",
+  "routes",
   "section_break_fields",
   "fields",
   "section_break_json",
@@ -71,6 +77,15 @@
    "label": "Settings"
   },
   {
+   "default": "Structured",
+   "description": "Structured uses the screen, route and field tables. Raw JSON preserves and uploads the JSON editor verbatim.",
+   "fieldname": "authoring_mode",
+   "fieldtype": "Select",
+   "label": "Authoring Mode",
+   "options": "Structured\nRaw JSON",
+   "reqd": 1
+  },
+  {
    "default": "OTHER",
    "fieldname": "category",
    "fieldtype": "Select",
@@ -103,22 +118,62 @@
    "options": "7.3\n7.2\n7.1\n7.0\n6.3\n6.2\n6.1\n6.0\n5.1"
   },
   {
+   "fieldname": "availability_section",
+   "fieldtype": "Section Break",
+   "label": "Phone Number Availability"
+  },
+  {
+   "default": "All Phone Numbers in WABA",
+   "description": "Choose whether this Flow can be sent by every configured phone number in its WABA or only selected numbers.",
+   "fieldname": "availability_mode",
+   "fieldtype": "Select",
+   "label": "Available On",
+   "options": "All Phone Numbers in WABA\nSelected Phone Numbers",
+   "reqd": 1
+  },
+  {
+   "depends_on": "eval:doc.availability_mode=='Selected Phone Numbers'",
+   "fieldname": "available_accounts",
+   "fieldtype": "Table",
+   "label": "Selected Phone Numbers",
+   "mandatory_depends_on": "eval:doc.availability_mode=='Selected Phone Numbers'",
+   "options": "WhatsApp Flow Account"
+  },
+  {
+   "depends_on": "eval:doc.authoring_mode=='Structured'",
    "fieldname": "section_break_screens",
    "fieldtype": "Section Break",
    "label": "Screens"
   },
   {
+   "depends_on": "eval:doc.authoring_mode=='Structured'",
    "fieldname": "screens",
    "fieldtype": "Table",
    "label": "Screens",
    "options": "WhatsApp Flow Screen"
   },
   {
+   "depends_on": "eval:doc.authoring_mode=='Structured'",
+   "fieldname": "section_break_routes",
+   "fieldtype": "Section Break",
+   "label": "Screen Routes"
+  },
+  {
+   "depends_on": "eval:doc.authoring_mode=='Structured'",
+   "description": "Optional explicit routes. Add conditional routes followed by one default route for a branching screen. Screens without routes continue in table order.",
+   "fieldname": "routes",
+   "fieldtype": "Table",
+   "label": "Routes",
+   "options": "WhatsApp Flow Route"
+  },
+  {
+   "depends_on": "eval:doc.authoring_mode=='Structured'",
    "fieldname": "section_break_fields",
    "fieldtype": "Section Break",
    "label": "Screen Fields"
   },
   {
+   "depends_on": "eval:doc.authoring_mode=='Structured'",
    "description": "Define fields for each screen. Set the Screen ID to match screens defined above.",
    "fieldname": "fields",
    "fieldtype": "Table",
@@ -132,12 +187,12 @@
    "label": "Generated Flow JSON"
   },
   {
-   "description": "Auto-generated from screens configuration",
+   "description": "Generated from the structured configuration, or editable directly in Raw JSON mode",
    "fieldname": "flow_json",
    "fieldtype": "Code",
    "label": "Flow JSON",
    "options": "JSON",
-   "read_only": 1
+   "read_only_depends_on": "eval:doc.authoring_mode!='Raw JSON'"
   },
   {
    "collapsible": 1,

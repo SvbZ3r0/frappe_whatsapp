@@ -10,12 +10,31 @@ from frappe.integrations.utils import make_post_request, make_request
 
 class WhatsAppFlow(Document):
     def before_save(self):
-        """Generate flow JSON before saving."""
-        self.flow_json = json.dumps(self.generate_flow_json(), indent=2)
+        """Generate structured JSON or normalize user-authored raw JSON."""
+        if self.authoring_mode == "Raw JSON":
+            self.flow_json = json.dumps(self.get_raw_flow_json(), indent=2)
+        else:
+            self.flow_json = json.dumps(self.generate_flow_json(), indent=2)
 
     def validate(self):
         """Validate flow configuration."""
-        self.validate_screens()
+        if self.authoring_mode == "Raw JSON":
+            self.get_raw_flow_json()
+        else:
+            self.validate_screens()
+            self.validate_routes()
+        self.validate_available_accounts()
+
+    def get_raw_flow_json(self):
+        """Return validated Flow JSON from the raw editor."""
+        try:
+            flow_json = json.loads(self.flow_json or "{}")
+        except (TypeError, json.JSONDecodeError) as exc:
+            frappe.throw(_("Flow JSON is invalid: {0}").format(str(exc)))
+
+        if not isinstance(flow_json, dict) or not flow_json.get("screens"):
+            frappe.throw(_("Flow JSON must contain at least one screen"))
+        return flow_json
 
     def validate_screens(self):
         """Ensure at least one screen exists and has valid configuration."""
@@ -36,6 +55,149 @@ class WhatsAppFlow(Document):
         if terminal_count == 0:
             frappe.throw(_("At least one screen must be marked as terminal"))
 
+    def validate_routes(self):
+        """Validate the explicit route graph used by structured flows."""
+        if not self.routes:
+            return
+
+        screens = {screen.screen_id: screen for screen in self.screens}
+        routes_by_source = self.get_routes_by_source()
+
+        for source, routes in routes_by_source.items():
+            if source not in screens:
+                frappe.throw(_("Route source screen does not exist: {0}").format(source))
+            if screens[source].terminal:
+                frappe.throw(_("Terminal screen {0} cannot have outgoing routes").format(source))
+
+            defaults = [route for route in routes if route.is_default]
+            if len(defaults) > 1:
+                frappe.throw(_("Screen {0} has more than one default route").format(source))
+            if len(routes) > 4:
+                frappe.throw(
+                    _("Screen {0} exceeds the supported limit of three conditions plus a default route").format(source)
+                )
+            if len(routes) > 1 and not defaults:
+                frappe.throw(_("Branching screen {0} requires a default route").format(source))
+            if len(routes) == 1 and routes[0].condition:
+                frappe.throw(
+                    _("A single route on {0} cannot be conditional; add a default branch").format(source)
+                )
+
+            conditions = set()
+            for route in routes:
+                if route.destination_screen not in screens:
+                    frappe.throw(_("Route destination screen does not exist: {0}").format(route.destination_screen))
+                if route.destination_screen == source:
+                    frappe.throw(_("A screen cannot route to itself: {0}").format(source))
+                if route.is_default and route.condition:
+                    frappe.throw(_("Default route on {0} cannot have a condition").format(source))
+                if not route.is_default and not route.condition and len(routes) > 1:
+                    frappe.throw(_("Non-default route on {0} requires a condition").format(source))
+                if route.condition and route.condition in conditions:
+                    frappe.throw(_("Duplicate route condition on screen {0}").format(source))
+                conditions.add(route.condition)
+
+        graph = self.get_route_graph()
+        visiting = set()
+        visited = set()
+
+        def visit(screen_id):
+            if screen_id in visiting:
+                frappe.throw(_("Flow routes contain a cycle at screen {0}").format(screen_id))
+            if screen_id in visited:
+                return
+            visiting.add(screen_id)
+            for destination in graph.get(screen_id, []):
+                visit(destination)
+            visiting.remove(screen_id)
+            visited.add(screen_id)
+
+        visit(self.screens[0].screen_id)
+        unreachable = set(screens) - visited
+        if unreachable:
+            frappe.throw(_("Unreachable screens: {0}").format(", ".join(sorted(unreachable))))
+        invalid_leaves = [
+            screen_id
+            for screen_id, destinations in graph.items()
+            if not destinations and not screens[screen_id].terminal
+        ]
+        if invalid_leaves:
+            frappe.throw(
+                _("Non-terminal screens without an outgoing route: {0}").format(
+                    ", ".join(sorted(invalid_leaves))
+                )
+            )
+
+    def validate_available_accounts(self):
+        """Restrict selected sending numbers to the Flow's WABA."""
+        if not self.whatsapp_account:
+            return
+
+        owner_business_id = frappe.db.get_value(
+            "WhatsApp Account", self.whatsapp_account, "business_id"
+        )
+        selected = [row.whatsapp_account for row in self.available_accounts]
+        if len(selected) != len(set(selected)):
+            frappe.throw(_("The same phone number cannot be selected more than once"))
+
+        if self.availability_mode == "Selected Phone Numbers" and not selected:
+            frappe.throw(_("Select at least one phone number for this Flow"))
+
+        for account_name in selected:
+            business_id = frappe.db.get_value("WhatsApp Account", account_name, "business_id")
+            same_waba = account_name == self.whatsapp_account or (
+                owner_business_id and business_id == owner_business_id
+            )
+            if not same_waba:
+                frappe.throw(
+                    _("WhatsApp Account {0} does not belong to the Flow's WABA").format(account_name)
+                )
+
+    def is_available_on(self, whatsapp_account):
+        """Return whether this Flow may be sent by the selected phone number."""
+        if not whatsapp_account:
+            return False
+
+        owner_business_id = frappe.db.get_value(
+            "WhatsApp Account", self.whatsapp_account, "business_id"
+        )
+        account_business_id = frappe.db.get_value(
+            "WhatsApp Account", whatsapp_account, "business_id"
+        )
+        same_waba = whatsapp_account == self.whatsapp_account or (
+            owner_business_id and owner_business_id == account_business_id
+        )
+        if not same_waba:
+            return False
+        if self.availability_mode != "Selected Phone Numbers":
+            return True
+        return whatsapp_account in {
+            row.whatsapp_account for row in self.available_accounts
+        }
+
+    def get_routes_by_source(self):
+        routes = {}
+        for route in self.routes:
+            routes.setdefault(route.source_screen, []).append(route)
+        return routes
+
+    def get_route_graph(self):
+        """Return explicit routes plus legacy table-order routes."""
+        explicit = self.get_routes_by_source()
+        graph = {}
+        for index, screen in enumerate(self.screens):
+            if screen.terminal:
+                graph[screen.screen_id] = []
+            elif screen.screen_id in explicit:
+                graph[screen.screen_id] = [
+                    route.destination_screen for route in explicit[screen.screen_id]
+                ]
+            elif index + 1 < len(self.screens):
+                graph[screen.screen_id] = [self.screens[index + 1].screen_id]
+            else:
+                graph[screen.screen_id] = []
+        return graph
+
     def generate_flow_json(self):
         """Generate WhatsApp Flow JSON from DocType configuration.
 
@@ -47,16 +209,15 @@ class WhatsAppFlow(Document):
             "screens": []
         }
 
-        # Build a map of which fields are passed to each screen from previous screens
+        # Build a graph-aware map of fields that may arrive from ancestor screens.
         screen_incoming_data = self.build_screen_data_map()
 
         for screen in self.screens:
             screen_data = self.build_screen(screen, screen_incoming_data.get(screen.screen_id, {}))
             flow["screens"].append(screen_data)
 
-        # Note: We intentionally do NOT include 'routing_model' or 'data_api_version'
-        # This creates a client-only flow that doesn't require an endpoint
-        # Data is returned via webhook (nfm_reply) when the flow completes
+        # Client-side branches compile to If components and do not require a
+        # data endpoint or routing_model.
 
         return flow
 
@@ -67,30 +228,47 @@ class WhatsAppFlow(Document):
             dict: {screen_id: {field_name: {"type": "string", "__example__": ""}}}
         """
         screen_data_map = {}
-        accumulated_fields = {}  # Fields accumulated from all previous screens
-
-        for i, screen in enumerate(self.screens):
-            # Current screen receives all accumulated fields from previous screens
-            if accumulated_fields:
-                screen_data_map[screen.screen_id] = accumulated_fields.copy()
-
-            # Add this screen's input fields to accumulated fields for next screens
-            for field in self.fields:
-                if field.screen != screen.screen_id:
-                    continue
-                if not field.enabled:
-                    continue
-                # Only input fields (not display components) are passed in payload
-                if field.field_type not in [
-                    "TextHeading", "TextSubheading", "TextBody",
-                    "TextCaption", "Image", "EmbeddedLink", "Footer"
-                ]:
-                    accumulated_fields[field.field_name] = {
+        for screen in self.screens:
+            incoming = {}
+            for ancestor_id in self.get_ancestor_screen_ids(screen.screen_id):
+                for field in self.get_input_fields(ancestor_id):
+                    incoming[field.field_name] = {
                         "type": "string",
                         "__example__": ""
                     }
-
+            if incoming:
+                screen_data_map[screen.screen_id] = incoming
         return screen_data_map
+
+    def get_input_fields(self, screen_id):
+        display_types = {
+            "TextHeading", "TextSubheading", "TextBody", "TextCaption",
+            "Image", "EmbeddedLink", "Footer"
+        }
+        return [
+            field for field in self.fields
+            if field.screen == screen_id and field.enabled and field.field_type not in display_types
+        ]
+
+    def get_ancestor_screen_ids(self, screen_id):
+        graph = self.get_route_graph()
+        reverse_graph = {screen.screen_id: set() for screen in self.screens}
+        for source, destinations in graph.items():
+            for destination in destinations:
+                reverse_graph.setdefault(destination, set()).add(source)
+
+        ancestors = set()
+        pending = list(reverse_graph.get(screen_id, set()))
+        while pending:
+            ancestor = pending.pop()
+            if ancestor in ancestors:
+                continue
+            ancestors.add(ancestor)
+            pending.extend(reverse_graph.get(ancestor, set()))
+        return [
+            screen.screen_id for screen in self.screens
+            if screen.screen_id in ancestors
+        ]
 
     def build_screen(self, screen, incoming_data=None):
         """Build a single screen definition."""
@@ -121,6 +299,7 @@ class WhatsAppFlow(Document):
         """Build field components for a screen."""
         children = []
         has_footer = False
+        explicit_routes = self.get_routes_by_source().get(screen.screen_id, [])
 
         # Get fields that belong to this screen from the fields table
         for field in self.fields:
@@ -132,11 +311,15 @@ class WhatsAppFlow(Document):
             component = self.build_field_component(field, screen)
             if component:
                 children.append(component)
-                if field.field_type == "Footer":
+                if field.field_type == "Footer" and not explicit_routes:
                     has_footer = True
 
-        # Always add a Footer if not present (required by WhatsApp)
-        if not has_footer:
+        # Explicit routes own the footer because a branch may need one footer
+        # in every arm of an If component.
+        if explicit_routes and not screen.terminal:
+            children = [child for child in children if child.get("type") != "Footer"]
+            children.append(self.build_route_component(screen, explicit_routes))
+        elif not has_footer:
             footer_action = self.build_footer_action(None, screen)
             children.append({
                 "type": "Footer",
@@ -145,6 +328,37 @@ class WhatsAppFlow(Document):
             })
 
         return children
+
+    def build_route_component(self, screen, routes):
+        """Compile ordered route rows to navigate footers or nested Meta Ifs."""
+        default_route = next((route for route in routes if route.is_default), None)
+        conditional_routes = [route for route in routes if not route.is_default]
+
+        if len(routes) == 1:
+            route = routes[0]
+            return self.build_route_footer(screen, route)
+
+        def build_branch(index):
+            route = conditional_routes[index]
+            if index + 1 < len(conditional_routes):
+                else_children = [build_branch(index + 1)]
+            else:
+                else_children = [self.build_route_footer(screen, default_route)]
+            return {
+                "type": "If",
+                "condition": route.condition,
+                "then": [self.build_route_footer(screen, route)],
+                "else": else_children
+            }
+
+        return build_branch(0)
+
+    def build_route_footer(self, screen, route):
+        return {
+            "type": "Footer",
+            "label": route.button_label or "Continue",
+            "on-click-action": self.build_footer_action(None, screen, route)
+        }
 
     def build_field_component(self, field, screen):
         """Build a single field component."""
@@ -226,7 +440,7 @@ class WhatsAppFlow(Document):
 
         return component
 
-    def build_footer_action(self, field, screen):
+    def build_footer_action(self, field, screen, route=None):
         """Build the action for a footer button."""
         if screen.terminal:
             # Complete the flow
@@ -236,7 +450,14 @@ class WhatsAppFlow(Document):
             }
         else:
             # Navigate to next screen
-            next_screen = self.get_next_screen(screen)
+            next_screen = None
+            if route:
+                next_screen = next(
+                    (item for item in self.screens if item.screen_id == route.destination_screen),
+                    None
+                )
+            if not next_screen:
+                next_screen = self.get_next_screen(screen)
             if next_screen:
                 return {
                     "name": "navigate",
@@ -256,31 +477,11 @@ class WhatsAppFlow(Document):
         """Build payload with all field values up to and including this screen."""
         payload = {}
 
-        # Include all fields from previous screens (passed via data) as data references
-        found_current = False
-        for s in self.screens:
-            if s.screen_id == screen.screen_id:
-                found_current = True
-                # For current screen, use form references
-                for field in self.fields:
-                    if field.screen != s.screen_id:
-                        continue
-                    if field.enabled and field.field_type not in [
-                        "TextHeading", "TextSubheading", "TextBody",
-                        "TextCaption", "Image", "EmbeddedLink", "Footer"
-                    ]:
-                        payload[field.field_name] = "${form." + field.field_name + "}"
-                break
-            else:
-                # For previous screens, use data references (already passed in)
-                for field in self.fields:
-                    if field.screen != s.screen_id:
-                        continue
-                    if field.enabled and field.field_type not in [
-                        "TextHeading", "TextSubheading", "TextBody",
-                        "TextCaption", "Image", "EmbeddedLink", "Footer"
-                    ]:
-                        payload[field.field_name] = "${data." + field.field_name + "}"
+        for ancestor_id in self.get_ancestor_screen_ids(screen.screen_id):
+            for field in self.get_input_fields(ancestor_id):
+                payload[field.field_name] = "${data." + field.field_name + "}"
+        for field in self.get_input_fields(screen.screen_id):
+            payload[field.field_name] = "${form." + field.field_name + "}"
 
         return payload
 
@@ -352,8 +553,12 @@ class WhatsAppFlow(Document):
 
         url = f"{account.url}/{account.version}/{self.flow_id}/assets"
 
-        # Generate fresh flow JSON
-        flow_json = self.generate_flow_json()
+        # Generate structured JSON or upload raw Meta JSON verbatim.
+        flow_json = (
+            self.get_raw_flow_json()
+            if self.authoring_mode == "Raw JSON"
+            else self.generate_flow_json()
+        )
 
         headers = {
             "Authorization": f"Bearer {token}"
@@ -625,7 +830,7 @@ class WhatsAppFlow(Document):
 
             # Try to get the flow JSON
             flow_json = self.fetch_flow_json()
-            if flow_json:
+            if flow_json and self.authoring_mode == "Raw JSON":
                 self.flow_json = json.dumps(flow_json, indent=2)
 
             self.save()
@@ -755,6 +960,7 @@ def import_flow_from_whatsapp(whatsapp_account, flow_id, flow_name=None):
             "whatsapp_account": whatsapp_account,
             "flow_id": flow_id,
             "status": data.get("status", "Draft").title(),
+            "authoring_mode": "Raw JSON",
             "category": data["categories"][0] if data.get("categories") else "OTHER",
             "data_api_version": data.get("json_version", "6.0"),
             "preview_url": data.get("preview", {}).get("preview_url", "")
@@ -863,11 +1069,12 @@ def sync_all_flows(whatsapp_account):
                     if flow_json:
                         flow_doc.flow_json = json.dumps(flow_json, indent=2)
                         flow_doc.data_api_version = flow_json.get("version", "6.0")
-
-                        # Clear existing screens and fields, then re-parse
-                        flow_doc.screens = []
-                        flow_doc.fields = []
-                        parse_flow_json_to_screens(flow_doc, flow_json)
+                        if flow_doc.authoring_mode == "Raw JSON":
+                            # Keep a read-only summary while preserving the full asset.
+                            flow_doc.screens = []
+                            flow_doc.fields = []
+                            flow_doc.routes = []
+                            parse_flow_json_to_screens(flow_doc, flow_json)
 
                     flow_doc.flags.ignore_validate = True
                     flow_doc.save(ignore_permissions=True)
@@ -884,6 +1091,7 @@ def sync_all_flows(whatsapp_account):
                         "whatsapp_account": whatsapp_account,
                         "flow_id": flow_id,
                         "status": flow.get("status", "Draft").title(),
+                        "authoring_mode": "Raw JSON",
                         "category": flow["categories"][0] if flow.get("categories") else "OTHER"
                     })
 
@@ -956,3 +1164,44 @@ def parse_flow_json_to_screens(flow_doc, flow_json):
                     field_data["options"] = json.dumps(data_source)
 
             flow_doc.append("fields", field_data)
+
+
+@frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def get_available_flows(doctype, txt, searchfield, start, page_len, filters):
+    """Link query for Flows that the selected sending phone number may use."""
+    frappe.has_permission("WhatsApp Flow", "read", throw=True)
+    whatsapp_account = (filters or {}).get("whatsapp_account")
+    if not whatsapp_account:
+        return []
+
+    business_id = frappe.db.get_value("WhatsApp Account", whatsapp_account, "business_id")
+    accounts = [whatsapp_account]
+    if business_id:
+        accounts = frappe.get_all(
+            "WhatsApp Account", filters={"business_id": business_id}, pluck="name"
+        )
+    if not accounts:
+        return []
+
+    placeholders = ", ".join(["%s"] * len(accounts))
+    search_text = f"%{txt}%"
+    return frappe.db.sql(
+        f"""
+        SELECT DISTINCT flow.name, flow.flow_name, flow.status
+        FROM `tabWhatsApp Flow` flow
+        LEFT JOIN `tabWhatsApp Flow Account` allowed
+            ON allowed.parent = flow.name
+            AND allowed.parenttype = 'WhatsApp Flow'
+            AND allowed.parentfield = 'available_accounts'
+        WHERE flow.whatsapp_account IN ({placeholders})
+          AND (
+            COALESCE(flow.availability_mode, 'All Phone Numbers in WABA') = 'All Phone Numbers in WABA'
+            OR allowed.whatsapp_account = %s
+          )
+          AND (flow.name LIKE %s OR flow.flow_name LIKE %s)
+        ORDER BY flow.flow_name
+        LIMIT %s OFFSET %s
+        """,
+        [*accounts, whatsapp_account, search_text, search_text, page_len, start]
+    )

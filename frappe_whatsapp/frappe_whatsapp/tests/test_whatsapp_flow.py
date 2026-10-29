@@ -314,6 +314,132 @@ class TestWhatsAppFlow(FrappeTestCase):
         self.assertIn("version", flow_json)
         self.assertIn("screens", flow_json)
 
+    def test_conditional_routes_generate_meta_if_component(self):
+        """Structured branches compile to a client-side Meta If component."""
+        flow = frappe.get_doc({
+            "doctype": "WhatsApp Flow",
+            "flow_name": "Test Conditional Branch",
+            "whatsapp_account": "Test Account",
+            "category": "OTHER",
+            "data_api_version": "7.3",
+            "screens": [
+                {"screen_id": "CHOICE", "screen_title": "Choose", "terminal": 0},
+                {"screen_id": "BUSINESS", "screen_title": "Business", "terminal": 1},
+                {"screen_id": "PERSONAL", "screen_title": "Personal", "terminal": 1}
+            ],
+            "fields": [{
+                "screen": "CHOICE",
+                "field_name": "selection",
+                "field_type": "RadioButtonsGroup",
+                "label": "Selection",
+                "enabled": 1,
+                "options": json.dumps([
+                    {"id": "business", "title": "Business"},
+                    {"id": "personal", "title": "Personal"}
+                ])
+            }],
+            "routes": [
+                {
+                    "source_screen": "CHOICE",
+                    "condition": "${form.selection} == 'option_a'",
+                    "destination_screen": "BUSINESS",
+                    "button_label": "Continue"
+                },
+                {
+                    "source_screen": "CHOICE",
+                    "is_default": 1,
+                    "destination_screen": "PERSONAL",
+                    "button_label": "Continue"
+                }
+            ]
+        })
+        flow.insert(ignore_permissions=True)
+
+        flow_json = json.loads(flow.flow_json)
+        branch = flow_json["screens"][0]["layout"]["children"][-1]
+        self.assertEqual(branch["type"], "If")
+        self.assertEqual(branch["condition"], "${form.selection} == 'option_a'")
+        self.assertEqual(
+            branch["then"][0]["on-click-action"]["next"]["name"], "BUSINESS"
+        )
+        self.assertEqual(
+            branch["else"][0]["on-click-action"]["next"]["name"], "PERSONAL"
+        )
+
+    def test_raw_json_is_preserved(self):
+        """Advanced Meta JSON must not be flattened by before_save."""
+        raw_json = {
+            "version": "7.3",
+            "screens": [{
+                "id": "RAW_SCREEN",
+                "title": "Raw",
+                "terminal": True,
+                "success": True,
+                "layout": {
+                    "type": "SingleColumnLayout",
+                    "children": [{
+                        "type": "Footer",
+                        "label": "Complete",
+                        "on-click-action": {"name": "complete", "payload": {}}
+                    }]
+                }
+            }]
+        }
+        flow = frappe.get_doc({
+            "doctype": "WhatsApp Flow",
+            "flow_name": "Test Raw JSON",
+            "whatsapp_account": "Test Account",
+            "category": "OTHER",
+            "authoring_mode": "Raw JSON",
+            "flow_json": json.dumps(raw_json)
+        })
+        flow.insert(ignore_permissions=True)
+        self.assertEqual(json.loads(flow.flow_json), raw_json)
+
+    def test_phone_number_availability(self):
+        """Selected availability allows only configured numbers in the WABA."""
+        account_name = "Test Account Secondary"
+        if not frappe.db.exists("WhatsApp Account", account_name):
+            frappe.get_doc({
+                "doctype": "WhatsApp Account",
+                "account_name": account_name,
+                "url": "https://graph.facebook.com",
+                "version": "v18.0",
+                "phone_id": "test_secondary_phone_id",
+                "business_id": "987654321",
+                "token": "test_token"
+            }).insert(ignore_permissions=True)
+
+        flow = frappe.get_doc({
+            "doctype": "WhatsApp Flow",
+            "flow_name": "Test Selected Phone",
+            "whatsapp_account": "Test Account",
+            "category": "OTHER",
+            "availability_mode": "Selected Phone Numbers",
+            "available_accounts": [{"whatsapp_account": account_name}],
+            "screens": [{"screen_id": "DONE", "screen_title": "Done", "terminal": 1}],
+            "fields": []
+        })
+        flow.insert(ignore_permissions=True)
+
+        self.assertTrue(flow.is_available_on(account_name))
+        self.assertFalse(flow.is_available_on("Test Account"))
+
+        from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_flow.whatsapp_flow import (
+            get_available_flows,
+        )
+
+        allowed_results = get_available_flows(
+            "WhatsApp Flow", "Test Selected", "name", 0, 20,
+            {"whatsapp_account": account_name}
+        )
+        blocked_results = get_available_flows(
+            "WhatsApp Flow", "Test Selected", "name", 0, 20,
+            {"whatsapp_account": "Test Account"}
+        )
+        self.assertIn(flow.name, {row[0] for row in allowed_results})
+        self.assertNotIn(flow.name, {row[0] for row in blocked_results})
+
 
 class TestWhatsAppFlowMessage(FrappeTestCase):
     """Test cases for sending WhatsApp Flow messages."""
@@ -338,7 +464,7 @@ class TestWhatsAppFlowMessage(FrappeTestCase):
                 self.flow_screen = "contact"
                 self.flow_token = "test_token_123"
                 self.message = "Please complete the form"
-                self.to = "919876543210"
+                self.to = "15555550107"
 
         # Verify the expected message structure
         expected_keys = ["flow_message_version", "flow_id", "flow_cta", "flow_action", "flow_action_payload", "flow_token"]

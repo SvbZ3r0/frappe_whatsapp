@@ -135,6 +135,9 @@ Build interactive forms using WhatsApp's native Flow Builder. Flows provide a ri
 **Features:**
 - Visual form builder with multiple screens
 - Support for text inputs, dropdowns, date pickers, and more
+- Conditional branches using ordered route conditions and a default route
+- Structured authoring or direct editing of advanced Meta Flow JSON
+- Per-phone-number Flow availability within a WhatsApp Business Account
 - Client-only flows (no endpoint required)
 - Publish and manage flows directly from Frappe
 - Send flow messages and receive responses via webhook
@@ -154,6 +157,11 @@ Build interactive forms using WhatsApp's native Flow Builder. Flows provide a ri
 - Deprecate - Mark flow as deprecated
 - Send Test - Test draft flows with registered test numbers
 - Sync from Meta - Import existing flows back to Frappe
+
+**Branches and availability:**
+- Add rows under **Screen Routes** to route a screen conditionally. Use Meta expressions such as `${form.selection} == 'option_a'` and add one default route per branching screen.
+- Choose **Raw JSON** authoring mode to preserve and edit Flow features that are not represented by the structured tables.
+- Set **Available On** to all phone numbers in the Flow's WABA or select an explicit set of WhatsApp Accounts/phone numbers. The same restriction is enforced when sending.
 
 ### Sync from Meta
 

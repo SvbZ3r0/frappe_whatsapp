@@ -206,7 +206,7 @@ class TestBulkWhatsAppMessage(IntegrationTestCase):
         failed_msg = frappe.get_doc({
             "doctype": "WhatsApp Message",
             "type": "Outgoing",
-            "to": "919900112277",
+            "to": "15555550108",
             "message": "Failed msg",
             "message_type": "Manual",
             "content_type": "text",
@@ -233,7 +233,7 @@ class TestBulkWhatsAppMessage(IntegrationTestCase):
             "doctype": "WhatsApp Recipient List",
             "list_name": "Test Recipient Bulk List",
         })
-        rec_list.append("recipients", {"mobile_number": "919900112277", "recipient_name": "List User"})
+        rec_list.append("recipients", {"mobile_number": "15555550108", "recipient_name": "List User"})
         rec_list.insert(ignore_permissions=True)
 
         doc = frappe.get_doc({

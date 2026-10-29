@@ -3,6 +3,7 @@
 
 frappe.ui.form.on("WhatsApp Flow", {
     refresh(frm) {
+        set_available_account_query(frm);
         // Import from Meta button (for new docs or docs without flow_id)
         if (frm.is_new() || !frm.doc.flow_id) {
             frm.add_custom_button(__("Import from Meta"), function() {
@@ -103,7 +104,7 @@ frappe.ui.form.on("WhatsApp Flow", {
                             label: __("Phone Number"),
                             fieldtype: "Data",
                             reqd: 1,
-                            description: __("Enter phone number with country code (e.g., 919876543210). Must be a registered test number for draft flows.")
+                            description: __("Enter phone number with country code (e.g., 15555550107). Must be a registered test number for draft flows.")
                         },
                         {
                             fieldname: "message",
@@ -195,8 +196,34 @@ frappe.ui.form.on("WhatsApp Flow", {
 
             frm.page.set_indicator(frm.doc.status, indicator);
         }
+    },
+
+    whatsapp_account(frm) {
+        frm.clear_table("available_accounts");
+        frm.refresh_field("available_accounts");
+        set_available_account_query(frm);
+    },
+
+    authoring_mode(frm) {
+        if (frm.doc.authoring_mode === "Raw JSON") {
+            frappe.show_alert({
+                message: __("Raw JSON is authoritative and will be uploaded without structured regeneration."),
+                indicator: "blue"
+            });
+        }
     }
 });
+
+function set_available_account_query(frm) {
+    if (!frm.doc.whatsapp_account) return;
+    frappe.db.get_value("WhatsApp Account", frm.doc.whatsapp_account, "business_id").then(r => {
+        const business_id = r.message && r.message.business_id;
+        if (!business_id) return;
+        frm.set_query("whatsapp_account", "available_accounts", function() {
+            return { filters: { business_id: business_id } };
+        });
+    });
+}
 
 
 function show_import_dialog(frm) {
