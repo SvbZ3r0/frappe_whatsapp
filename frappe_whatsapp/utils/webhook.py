@@ -142,8 +142,15 @@ def post():
 					# Parse the response JSON
 					try:
 						flow_response = json.loads(response_json_str)
-					except json.JSONDecodeError:
+					except (TypeError, json.JSONDecodeError):
 						flow_response = {}
+					if not isinstance(flow_response, dict):
+						flow_response = {}
+
+					flow_token = flow_response.get('flow_token')
+					outgoing_flow = get_outgoing_flow_message(
+						flow_token, whatsapp_account.name
+					)
 
 					# Create a summary message from the flow response
 					summary_parts = []
@@ -161,6 +168,8 @@ def post():
 						"reply_to_message_id": reply_to_message_id,
 						"is_reply": is_reply,
 						"content_type": "flow",
+						"flow": outgoing_flow.get("flow") if outgoing_flow else None,
+						"flow_token": flow_token,
 						"flow_response": json.dumps(flow_response),
 						"profile_name": sender_profile_name,
 						"whatsapp_account": whatsapp_account.name
@@ -172,6 +181,8 @@ def post():
 						{
 							"phone": message['from'],
 							"message_id": message['id'],
+							"flow": outgoing_flow.get("flow") if outgoing_flow else None,
+							"flow_token": flow_token,
 							"flow_response": flow_response,
 							"whatsapp_account": whatsapp_account.name
 						}
@@ -275,6 +286,27 @@ def post():
 			changes = data["entry"]["changes"][0]
 		update_status(changes)
 	return
+
+
+def get_outgoing_flow_message(flow_token, whatsapp_account):
+	"""Find the originating Flow message without crossing phone-number accounts."""
+	if not flow_token or not whatsapp_account:
+		return None
+
+	matches = frappe.get_all(
+		"WhatsApp Message",
+		filters={
+			"type": "Outgoing",
+			"content_type": "flow",
+			"flow_token": flow_token,
+			"whatsapp_account": whatsapp_account,
+		},
+		fields=["name", "flow", "flow_token"],
+		order_by="creation desc",
+		limit=1,
+	)
+	return matches[0] if matches else None
+
 
 def update_status(data):
 	"""Update status hook."""

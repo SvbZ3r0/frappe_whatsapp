@@ -193,6 +193,7 @@ class WhatsAppMessage(Document):
 
                 # Add flow token - generate one if not provided (required by WhatsApp)
                 flow_token = self.flow_token or frappe.generate_hash(length=16)
+                self.flow_token = flow_token
                 data["interactive"]["action"]["parameters"]["flow_token"] = flow_token
 
             try:

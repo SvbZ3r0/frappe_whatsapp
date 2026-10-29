@@ -54,6 +54,8 @@ class TestWhatsAppMessage(IntegrationTestCase):
         frappe.db.delete(
             "WhatsApp Profiles", {"whatsapp_account": "Test WA Msg Account"}
         )
+        if frappe.db.exists("WhatsApp Flow", "Test WA Message Flow"):
+            frappe.delete_doc("WhatsApp Flow", "Test WA Message Flow", force=True)
         frappe.db.commit()  # nosemgrep: frappe-manual-commit -- test fixture must be visible to later queries
 
     def test_incoming_message_creation(self):
@@ -112,6 +114,45 @@ class TestWhatsAppMessage(IntegrationTestCase):
         self.assertEqual(sent_data["to"], "919900112255")
         self.assertEqual(sent_data["type"], "text")
         self.assertEqual(sent_data["text"]["body"], "Hello from test")
+
+    @patch("frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_message.whatsapp_message.make_post_request")
+    def test_outgoing_flow_persists_generated_token(self, mock_post):
+        """The token sent to Meta must be stored on the outgoing message."""
+        mock_post.return_value = {"messages": [{"id": "wamid.test_flow_token_1"}]}
+        flow = frappe.get_doc({
+            "doctype": "WhatsApp Flow",
+            "flow_name": "Test WA Message Flow",
+            "whatsapp_account": "Test WA Msg Account",
+            "status": "Published",
+            "category": "OTHER",
+            "screens": [{
+                "screen_id": "START",
+                "screen_title": "Start",
+                "terminal": 1,
+            }],
+            "fields": [],
+        }).insert(ignore_permissions=True)
+        flow.db_set("flow_id", "test_meta_flow_id")
+
+        doc = frappe.get_doc({
+            "doctype": "WhatsApp Message",
+            "type": "Outgoing",
+            "to": "15555550102",
+            "message": "Open the test flow",
+            "message_type": "Manual",
+            "content_type": "flow",
+            "flow": flow.name,
+            "whatsapp_account": "Test WA Msg Account",
+        })
+        doc.insert(ignore_permissions=True)
+
+        sent_data = json.loads(mock_post.call_args.kwargs["data"])
+        sent_token = sent_data["interactive"]["action"]["parameters"]["flow_token"]
+        self.assertTrue(sent_token)
+        self.assertEqual(doc.flow_token, sent_token)
+        self.assertEqual(
+            frappe.db.get_value("WhatsApp Message", doc.name, "flow_token"), sent_token
+        )
 
     @patch("frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_message.whatsapp_message.make_post_request")
     def test_outgoing_text_message_with_plus_number(self, mock_post):

@@ -176,6 +176,19 @@ class TestWebhookEndpoint(IntegrationTestCase):
             from frappe.utils.password import set_encrypted_password
             set_encrypted_password("WhatsApp Account", account.name, "ep_token", "token")
             frappe.db.commit()  # nosemgrep: frappe-manual-commit -- test fixture must be visible to later queries
+        if not frappe.db.exists("WhatsApp Account", "Test WA Webhook Other Account"):
+            frappe.get_doc({
+                "doctype": "WhatsApp Account",
+                "account_name": "Test WA Webhook Other Account",
+                "status": "Active",
+                "url": "https://graph.facebook.com",
+                "version": "v17.0",
+                "phone_id": "webhook_other_phone_id",
+                "business_id": "webhook_other_business_id",
+                "app_id": "webhook_other_app_id",
+                "webhook_verify_token": "webhook_other_verify_token",
+            }).insert(ignore_permissions=True)
+            frappe.db.commit()  # nosemgrep: frappe-manual-commit -- test fixture must be visible to later queries
 
     def setUp(self):
         # Set password within each test's transaction scope
@@ -195,6 +208,8 @@ class TestWebhookEndpoint(IntegrationTestCase):
             frappe.delete_doc("WhatsApp Notification Log", name, force=True)
         for name in frappe.get_all("WhatsApp Profiles", filters={"number": ["like", "9199%"]}, pluck="name"):
             frappe.delete_doc("WhatsApp Profiles", name, force=True)
+        for name in frappe.get_all("WhatsApp Flow", filters={"flow_name": ["like", "Webhook Correlation%"]}, pluck="name"):
+            frappe.delete_doc("WhatsApp Flow", name, force=True)
         frappe.db.commit()  # nosemgrep: frappe-manual-commit -- test fixture must be visible to later queries
 
     def _make_mock_request(self, method="GET"):
@@ -356,6 +371,96 @@ class TestWebhookEndpoint(IntegrationTestCase):
         msg = frappe.get_doc("WhatsApp Message", {"message_id": "wamid.webhook_ep_reply_1"})
         self.assertEqual(msg.is_reply, 1)
         self.assertEqual(msg.reply_to_message_id, "wamid.original_msg_replied_to")
+
+    def test_webhook_correlates_flow_reply_by_token_and_account(self):
+        """A Flow reply resolves only to the token on the receiving account."""
+        correct_flow = frappe.get_doc({
+            "doctype": "WhatsApp Flow",
+            "flow_name": "Webhook Correlation Test Flow",
+            "whatsapp_account": "Test WA Webhook EP Account",
+            "category": "OTHER",
+            "screens": [{
+                "screen_id": "START",
+                "screen_title": "Start",
+                "terminal": 1,
+            }],
+            "fields": [],
+        }).insert(ignore_permissions=True)
+        decoy_flow = frappe.get_doc({
+            "doctype": "WhatsApp Flow",
+            "flow_name": "Webhook Correlation Decoy Flow",
+            "whatsapp_account": "Test WA Webhook EP Account",
+            "category": "OTHER",
+            "screens": [{
+                "screen_id": "START",
+                "screen_title": "Start",
+                "terminal": 1,
+            }],
+            "fields": [],
+        }).insert(ignore_permissions=True)
+
+        token = "test_flow_token_123"
+        for account, flow, message_id in (
+            (
+                "Test WA Webhook EP Account",
+                correct_flow.name,
+                "wamid.webhook_ep_flow_out_correct",
+            ),
+            (
+                "Test WA Webhook Other Account",
+                decoy_flow.name,
+                "wamid.webhook_ep_flow_out_decoy",
+            ),
+        ):
+            outgoing = frappe.get_doc({
+                "doctype": "WhatsApp Message",
+                "type": "Outgoing",
+                "to": "15555550106",
+                "message": "Test flow",
+                "message_id": message_id,
+                "content_type": "flow",
+                "flow": flow,
+                "flow_token": token,
+                "whatsapp_account": account,
+            })
+            outgoing.flags.ignore_validate = True
+            outgoing.db_insert()
+
+        mock_request = self._make_mock_request("POST")
+        response_data = {"flow_token": token, "selection": "option_a"}
+        payload = {
+            "entry": [{
+                "changes": [{
+                    "value": {
+                        "metadata": {"phone_number_id": "webhook_ep_phone_id"},
+                        "contacts": [{"profile": {"name": "Test User"}}],
+                        "messages": [{
+                            "from": "15555550106",
+                            "id": "wamid.webhook_ep_flow_reply_1",
+                            "type": "interactive",
+                            "interactive": {
+                                "type": "nfm_reply",
+                                "nfm_reply": {
+                                    "response_json": json.dumps(response_data),
+                                },
+                            },
+                        }],
+                    },
+                }],
+            }],
+        }
+        frappe.local.form_dict = frappe._dict(payload)
+
+        with patch("frappe_whatsapp.utils.webhook.frappe.request", mock_request):
+            from frappe_whatsapp.utils.webhook import webhook
+            webhook()
+
+        incoming = frappe.get_doc(
+            "WhatsApp Message", {"message_id": "wamid.webhook_ep_flow_reply_1"}
+        )
+        self.assertEqual(incoming.flow, correct_flow.name)
+        self.assertEqual(incoming.flow_token, token)
+        self.assertEqual(json.loads(incoming.flow_response), response_data)
 
     def test_webhook_post_status_update(self):
         """Test POST webhook with status update (no messages)."""

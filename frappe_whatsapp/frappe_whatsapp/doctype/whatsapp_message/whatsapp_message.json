@@ -255,7 +255,8 @@
    "description": "Optional token for flow authentication",
    "fieldname": "flow_token",
    "fieldtype": "Data",
-   "label": "Flow Token"
+   "label": "Flow Token",
+   "search_index": 1
   },
   {
    "collapsible": 1,
