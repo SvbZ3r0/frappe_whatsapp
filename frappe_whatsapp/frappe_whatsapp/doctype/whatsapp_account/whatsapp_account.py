@@ -5,6 +5,7 @@ import frappe
 from frappe import _
 from frappe.integrations.utils import make_post_request
 from frappe.model.document import Document
+from frappe.utils import now_datetime
 
 
 class WhatsAppAccount(Document):
@@ -47,25 +48,35 @@ class WhatsAppAccount(Document):
 		self.flow_private_key = private_pem
 		self.flow_private_key_passphrase = passphrase
 		self.flow_public_key = public_pem
+		self.flow_public_key_signature_status = "NOT VERIFIED"
+		self.flow_public_key_verified = 0
+		self.flow_public_key_verified_on = None
 		self.save(ignore_permissions=True)
 		return public_pem
+
+	def get_flow_encryption_api_config(self):
+		for field in ("url", "version", "phone_id", "flow_public_key"):
+			if not self.get(field):
+				frappe.throw(
+					_("{0} is required").format(frappe.bold(self.meta.get_label(field)))
+				)
+		token = self.get_password("token")
+		if not token:
+			frappe.throw(_("Access token is required"))
+		return (
+			f"{self.url}/{self.version}/{self.phone_id}/whatsapp_business_encryption",
+			{"Authorization": f"Bearer {token}"},
+		)
 
 	@frappe.whitelist()
 	def register_flow_public_key(self):
 		"""Register this phone number's Flow encryption public key with Meta."""
 		import requests
 
-		for field in ("url", "version", "phone_id", "flow_public_key"):
-			if not self.get(field):
-				frappe.throw(_("{0} is required").format(frappe.bold(self.meta.get_label(field))))
-		token = self.get_password("token")
-		if not token:
-			frappe.throw(_("Access token is required"))
-
-		endpoint = f"{self.url}/{self.version}/{self.phone_id}/whatsapp_business_encryption"
+		endpoint, headers = self.get_flow_encryption_api_config()
 		response = requests.post(
 			endpoint,
-			headers={"Authorization": f"Bearer {token}"},
+			headers=headers,
 			data={"business_public_key": self.flow_public_key},
 			timeout=30,
 		)
@@ -80,7 +91,44 @@ class WhatsAppAccount(Document):
 		result = response.json()
 		if not result.get("success"):
 			frappe.throw(_("Meta did not accept the Flow public key"))
+		self.flow_public_key_signature_status = "NOT VERIFIED"
+		self.flow_public_key_verified = 0
+		self.flow_public_key_verified_on = None
+		self.save(ignore_permissions=True)
 		return result
+
+	@frappe.whitelist()
+	def verify_flow_public_key(self):
+		"""Verify Meta's registered key and signature status against the local key."""
+		import requests
+
+		endpoint, headers = self.get_flow_encryption_api_config()
+		response = requests.get(endpoint, headers=headers, timeout=30)
+		if response.status_code != 200:
+			try:
+				error = response.json().get("error", {})
+				error_message = error.get("error_user_msg") or error.get("message")
+			except (ValueError, AttributeError):
+				error_message = response.text
+			frappe.throw(_("Failed to verify Flow public key: {0}").format(error_message))
+
+		result = response.json()
+		meta_public_key = result.get("business_public_key")
+		signature_status = (
+			result.get("business_public_key_signature_status") or "NOT REGISTERED"
+		).upper()
+		key_matches = public_keys_match(self.flow_public_key, meta_public_key)
+		verified = signature_status == "VALID" and key_matches
+
+		self.flow_public_key_signature_status = signature_status
+		self.flow_public_key_verified = int(verified)
+		self.flow_public_key_verified_on = now_datetime()
+		self.save(ignore_permissions=True)
+		return {
+			"verified": verified,
+			"signature_status": signature_status,
+			"key_matches": key_matches,
+		}
 
 	@frappe.whitelist()
 	def subscribe_app(self):
@@ -122,3 +170,26 @@ class WhatsAppAccount(Document):
 			f"WhatsApp app subscribed to webhooks for business_id={self.business_id}"
 		)
 		return response
+
+
+def public_keys_match(local_public_key, meta_public_key):
+	"""Compare PEM public keys by canonical SubjectPublicKeyInfo bytes."""
+	if not local_public_key or not meta_public_key:
+		return False
+
+	from cryptography.hazmat.primitives import serialization
+
+	try:
+		local_key = serialization.load_pem_public_key(local_public_key.encode())
+		meta_key = serialization.load_pem_public_key(meta_public_key.encode())
+		local_der = local_key.public_bytes(
+			serialization.Encoding.DER,
+			serialization.PublicFormat.SubjectPublicKeyInfo,
+		)
+		meta_der = meta_key.public_bytes(
+			serialization.Encoding.DER,
+			serialization.PublicFormat.SubjectPublicKeyInfo,
+		)
+	except (TypeError, ValueError):
+		return False
+	return local_der == meta_der

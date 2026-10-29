@@ -25,7 +25,30 @@ frappe.ui.form.on("WhatsApp Account", {
 						freeze: true,
 						freeze_message: __("Registering public key with Meta..."),
 						callback: (r) => {
-							if (!r.exc) frappe.show_alert({message: __("Flow public key registered"), indicator: "green"});
+							if (!r.exc) {
+								frappe.show_alert({message: __("Flow public key registered"), indicator: "green"});
+								frm.reload_doc();
+							}
+						},
+					});
+				}, __("Flows"));
+
+				frm.add_custom_button(__("Verify Flow Public Key"), () => {
+					frm.call({
+						method: "verify_flow_public_key",
+						doc: frm.doc,
+						freeze: true,
+						freeze_message: __("Verifying public key with Meta..."),
+						callback: (r) => {
+							if (r.exc) return;
+							const verified = r.message?.verified;
+							frappe.show_alert({
+								message: verified
+									? __("Flow public key verified")
+									: __("Meta did not verify this account's Flow public key"),
+								indicator: verified ? "green" : "red",
+							});
+							frm.reload_doc();
 						},
 					});
 				}, __("Flows"));

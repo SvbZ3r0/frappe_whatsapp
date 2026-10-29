@@ -23,6 +23,9 @@
   "allow_auto_read_receipt",
   "flow_encryption_section",
   "flow_public_key",
+  "flow_public_key_signature_status",
+  "flow_public_key_verified",
+  "flow_public_key_verified_on",
   "column_break_flow_encryption",
   "flow_private_key",
   "flow_private_key_passphrase",
@@ -120,6 +123,27 @@
    "fieldtype": "Code",
    "label": "Flow Public Key",
    "options": "Text",
+   "read_only": 1
+  },
+  {
+   "description": "Signature status returned by Meta for this phone number's registered Flow key",
+   "fieldname": "flow_public_key_signature_status",
+   "fieldtype": "Data",
+   "label": "Meta Key Signature Status",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "description": "Enabled only when Meta reports VALID and its registered public key matches this account's local public key",
+   "fieldname": "flow_public_key_verified",
+   "fieldtype": "Check",
+   "label": "Flow Public Key Verified",
+   "read_only": 1
+  },
+  {
+   "fieldname": "flow_public_key_verified_on",
+   "fieldtype": "Datetime",
+   "label": "Flow Public Key Checked On",
    "read_only": 1
   },
   {

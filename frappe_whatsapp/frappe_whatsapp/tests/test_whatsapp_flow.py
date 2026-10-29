@@ -4,7 +4,7 @@
 import unittest
 import json
 import base64
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
@@ -558,6 +558,73 @@ class TestFlowEndpoint(FrappeTestCase):
 
         self.assertTrue(verify_signature(payload, signature, "secret"))
         self.assertFalse(verify_signature(payload, signature, "wrong-secret"))
+
+    def test_compares_public_keys_cryptographically(self):
+        from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_account.whatsapp_account import (
+            public_keys_match,
+        )
+
+        public_key = self.private_key.public_key()
+        subject_public_key = public_key.public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode()
+        pkcs1_public_key = public_key.public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.PKCS1,
+        ).decode()
+        different_key = rsa.generate_private_key(
+            public_exponent=65537, key_size=2048
+        ).public_key().public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode()
+
+        self.assertTrue(public_keys_match(subject_public_key, pkcs1_public_key))
+        self.assertFalse(public_keys_match(subject_public_key, different_key))
+        self.assertFalse(public_keys_match(subject_public_key, "not a public key"))
+
+    def test_verifies_meta_key_status_and_local_key_match(self):
+        from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_account.whatsapp_account import (
+            WhatsAppAccount,
+        )
+
+        public_key = self.private_key.public_key().public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode()
+        account = frappe._dict(flow_public_key=public_key)
+        account.get_flow_encryption_api_config = lambda: (
+            "https://graph.facebook.com/v18.0/phone/whatsapp_business_encryption",
+            {"Authorization": "Bearer redacted"},
+        )
+        account.save = MagicMock()
+        response = MagicMock(status_code=200)
+        response.json.return_value = {
+            "business_public_key": public_key,
+            "business_public_key_signature_status": "VALID",
+        }
+
+        with patch("requests.get", return_value=response):
+            result = WhatsAppAccount.verify_flow_public_key(account)
+
+        self.assertEqual(
+            result,
+            {"verified": True, "signature_status": "VALID", "key_matches": True},
+        )
+        self.assertEqual(account.flow_public_key_verified, 1)
+        self.assertIsNotNone(account.flow_public_key_verified_on)
+        account.save.assert_called_once_with(ignore_permissions=True)
+
+        response.json.return_value["business_public_key_signature_status"] = "MISMATCH"
+        account.save.reset_mock()
+        with patch("requests.get", return_value=response):
+            mismatch = WhatsAppAccount.verify_flow_public_key(account)
+
+        self.assertFalse(mismatch["verified"])
+        self.assertTrue(mismatch["key_matches"])
+        self.assertEqual(account.flow_public_key_verified, 0)
+        account.save.assert_called_once_with(ignore_permissions=True)
 
     def test_normalizes_and_dispatches_to_installed_app(self):
         from frappe_whatsapp.frappe_whatsapp.api.flow_endpoint import (
