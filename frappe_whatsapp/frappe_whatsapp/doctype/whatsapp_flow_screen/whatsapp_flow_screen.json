@@ -13,6 +13,7 @@
   "refresh_on_back",
   "column_break_2",
   "layout_type",
+  "data_json",
   "success_message"
  ],
  "fields": [
@@ -59,6 +60,13 @@
    "fieldtype": "Select",
    "label": "Layout Type",
    "options": "SingleColumnLayout"
+  },
+  {
+   "description": "Exact Meta screen data schema. Leave empty to derive data passed from preceding structured screens.",
+   "fieldname": "data_json",
+   "fieldtype": "Code",
+   "label": "Screen Data Schema",
+   "options": "JSON"
   },
   {
    "depends_on": "eval:doc.terminal",

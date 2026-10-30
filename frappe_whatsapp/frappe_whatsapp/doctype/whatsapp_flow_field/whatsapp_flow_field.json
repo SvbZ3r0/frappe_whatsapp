@@ -10,18 +10,23 @@
   "field_name",
   "field_type",
   "label",
+  "form_name",
   "column_break_1",
   "required",
   "enabled",
   "section_break_options",
   "init_value",
+  "input_type",
   "min_chars",
   "max_chars",
   "column_break_2",
   "helper_text",
   "error_message",
   "section_break_dropdown",
-  "options"
+  "options",
+  "section_break_action",
+  "action_name",
+  "action_payload"
  ],
  "fields": [
   {
@@ -54,6 +59,12 @@
    "label": "Label"
   },
   {
+   "description": "Optional Meta Form container. Consecutive rows with the same name are grouped into one Form.",
+   "fieldname": "form_name",
+   "fieldtype": "Data",
+   "label": "Form Name"
+  },
+  {
    "fieldname": "column_break_1",
    "fieldtype": "Column Break"
   },
@@ -80,6 +91,13 @@
    "fieldname": "init_value",
    "fieldtype": "Data",
    "label": "Initial Value"
+  },
+  {
+   "depends_on": "eval:doc.field_type=='TextInput'",
+   "description": "Optional Meta TextInput input-type, for example number, email or phone",
+   "fieldname": "input_type",
+   "fieldtype": "Data",
+   "label": "Input Type"
   },
   {
    "depends_on": "eval:['TextInput', 'TextArea'].includes(doc.field_type)",
@@ -119,6 +137,28 @@
    "fieldname": "options",
    "fieldtype": "Code",
    "label": "Options",
+   "options": "JSON"
+  },
+  {
+   "depends_on": "eval:doc.field_type=='Footer'",
+   "fieldname": "section_break_action",
+   "fieldtype": "Section Break",
+   "label": "Footer Action"
+  },
+  {
+   "default": "",
+   "depends_on": "eval:doc.field_type=='Footer'",
+   "fieldname": "action_name",
+   "fieldtype": "Select",
+   "label": "Action",
+   "options": "\nnavigate\ndata_exchange\ncomplete"
+  },
+  {
+   "depends_on": "eval:doc.field_type=='Footer'",
+   "description": "Exact JSON payload sent by the Footer action",
+   "fieldname": "action_payload",
+   "fieldtype": "Code",
+   "label": "Action Payload",
    "options": "JSON"
   }
  ],

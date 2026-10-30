@@ -6,6 +6,7 @@
  "engine": "InnoDB",
  "field_order": [
   "source_screen",
+  "server_driven",
   "condition",
   "is_default",
   "destination_screen",
@@ -19,6 +20,14 @@
    "in_list_view": 1,
    "label": "From Screen",
    "reqd": 1
+  },
+  {
+   "default": "0",
+   "description": "Route is declared in routing_model and selected by the Data Exchange endpoint, not by a client-side If component.",
+   "fieldname": "server_driven",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Server Driven"
   },
   {
    "description": "Meta boolean expression, for example: ${form.selection} == 'option_a'",

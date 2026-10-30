@@ -94,10 +94,11 @@ def parse_flow_json_to_structured(flow_json):
                 "terminal": int(terminal),
                 "refresh_on_back": int(bool(screen.get("refresh_on_back"))),
                 "layout_type": "SingleColumnLayout",
+                "data_json": json.dumps(screen.get("data") or {}),
             }
         )
 
-        route_component_seen = False
+        route_component_seen = [False]
         for component in children:
             if not isinstance(component, dict):
                 frappe.throw(
@@ -105,74 +106,148 @@ def parse_flow_json_to_structured(flow_json):
                         screen_id
                     )
                 )
-            component_type = component.get("type")
-            if component_type == "If":
-                if terminal or route_component_seen:
+            if component.get("type") == "Form":
+                form_name = component.get("name")
+                form_children = component.get("children")
+                if not form_name or not isinstance(form_children, list):
                     frappe.throw(
-                        _("Screen {0} has an unsupported conditional layout").format(
+                        _("Form on screen {0} requires a name and children").format(
                             screen_id
                         )
                     )
-                parsed["routes"].extend(
-                    parse_conditional_routes(component, screen_id)
+                for form_component in form_children:
+                    display_field_index = parse_layout_component(
+                        form_component,
+                        screen_id,
+                        terminal,
+                        parsed,
+                        display_field_index,
+                        route_component_seen,
+                        form_name=form_name,
+                    )
+            else:
+                display_field_index = parse_layout_component(
+                    component,
+                    screen_id,
+                    terminal,
+                    parsed,
+                    display_field_index,
+                    route_component_seen,
                 )
-                route_component_seen = True
-                continue
-            if component_type == "Footer":
-                action_name = (component.get("on-click-action") or {}).get("name")
-                if action_name == "navigate":
-                    if terminal or route_component_seen:
-                        frappe.throw(
-                            _("Screen {0} has multiple or invalid route footers").format(
-                                screen_id
-                            )
-                        )
-                    parsed["routes"].append(
-                        parse_route_footer(component, screen_id, is_default=True)
-                    )
-                    route_component_seen = True
-                    continue
-                if action_name != "complete" or not terminal:
+
+    routing_model = flow_json.get("routing_model")
+    if routing_model is not None:
+        if not isinstance(routing_model, dict):
+            frappe.throw(_("routing_model must be a JSON object"))
+        client_destinations = {}
+        for route in parsed["routes"]:
+            client_destinations.setdefault(route["source_screen"], []).append(
+                route["destination_screen"]
+            )
+        for source, destinations in routing_model.items():
+            if not isinstance(destinations, list):
+                frappe.throw(
+                    _("routing_model destinations for {0} must be an array").format(source)
+                )
+            if source in client_destinations:
+                if client_destinations[source] != destinations:
                     frappe.throw(
-                        _("Screen {0} uses an unsupported Footer action").format(
-                            screen_id
+                        _("routing_model does not match client routes for screen {0}").format(
+                            source
                         )
                     )
-                if component.get("label") == "Complete":
-                    # This is the structured generator's implicit terminal footer.
-                    continue
-                display_field_index += 1
-                parsed["fields"].append(
+                continue
+            for destination in destinations:
+                parsed["routes"].append(
                     {
-                        "screen": screen_id,
-                        "field_name": f"footer_{display_field_index}",
-                        "field_type": "Footer",
-                        "label": component.get("label") or "Submit",
-                        "enabled": 1,
+                        "source_screen": source,
+                        "server_driven": 1,
+                        "destination_screen": destination,
+                        "button_label": "Continue",
                     }
                 )
-                continue
-
-            if component_type not in STRUCTURED_FIELD_TYPES:
-                frappe.throw(
-                    _("Component type {0} is not supported by Structured mode").format(
-                        component_type or "(missing)"
-                    )
-                )
-            field, display_field_index = parse_field_component(
-                component, screen_id, display_field_index
-            )
-            parsed["fields"].append(field)
 
     return parsed
 
 
-def parse_field_component(component, screen_id, display_field_index):
+def parse_layout_component(
+    component,
+    screen_id,
+    terminal,
+    parsed,
+    display_field_index,
+    route_component_seen,
+    form_name=None,
+):
+    """Parse a component that appears directly in a layout or Form."""
+    if not isinstance(component, dict):
+        frappe.throw(
+            _("Every component on screen {0} must be a JSON object").format(screen_id)
+        )
+    component_type = component.get("type")
+    if component_type == "If":
+        if form_name or terminal or route_component_seen[0]:
+            frappe.throw(
+                _("Screen {0} has an unsupported conditional layout").format(screen_id)
+            )
+        parsed["routes"].extend(parse_conditional_routes(component, screen_id))
+        route_component_seen[0] = True
+        return display_field_index
+
+    if component_type == "Footer":
+        action = component.get("on-click-action") or {}
+        action_name = action.get("name")
+        if action_name == "navigate":
+            if form_name or terminal or route_component_seen[0]:
+                frappe.throw(
+                    _("Screen {0} has multiple or invalid route footers").format(
+                        screen_id
+                    )
+                )
+            parsed["routes"].append(
+                parse_route_footer(component, screen_id, is_default=True)
+            )
+            route_component_seen[0] = True
+            return display_field_index
+        if action_name not in ("complete", "data_exchange"):
+            frappe.throw(
+                _("Screen {0} uses an unsupported Footer action").format(screen_id)
+            )
+        display_field_index += 1
+        parsed["fields"].append(
+            {
+                "screen": screen_id,
+                "field_name": f"footer_{display_field_index}",
+                "field_type": "Footer",
+                "label": component.get("label") or "Submit",
+                "form_name": form_name,
+                "action_name": action_name,
+                "action_payload": json.dumps(action.get("payload") or {}),
+                "enabled": 1,
+            }
+        )
+        return display_field_index
+
+    if component_type not in STRUCTURED_FIELD_TYPES:
+        frappe.throw(
+            _("Component type {0} is not supported by Structured mode").format(
+                component_type or "(missing)"
+            )
+        )
+    field, display_field_index = parse_field_component(
+        component, screen_id, display_field_index, form_name=form_name
+    )
+    parsed["fields"].append(field)
+    return display_field_index
+
+
+def parse_field_component(component, screen_id, display_field_index, form_name=None):
     """Convert one supported Meta component into a field table row."""
     component_type = component["type"]
     field = {
         "screen": screen_id,
         "field_type": component_type,
+        "form_name": form_name,
         "enabled": 1,
     }
 
@@ -228,6 +303,7 @@ def parse_field_component(component, screen_id, display_field_index):
             "min_chars": component.get("min-chars"),
             "max_chars": component.get("max-chars"),
             "error_message": component.get("error-message"),
+            "input_type": component.get("input-type"),
         }
     )
     if component_type in OPTION_COMPONENT_TYPES and component.get("data-source"):
@@ -438,16 +514,34 @@ class WhatsAppFlow(Document):
             if screens[source].terminal:
                 frappe.throw(_("Terminal screen {0} cannot have outgoing routes").format(source))
 
-            defaults = [route for route in routes if route.is_default]
+            server_routes = [route for route in routes if route.server_driven]
+            client_routes = [route for route in routes if not route.server_driven]
+            if server_routes and client_routes:
+                frappe.throw(
+                    _("Screen {0} cannot mix server-driven and client-side routes").format(source)
+                )
+            if server_routes:
+                if not self.handler_key:
+                    frappe.throw(
+                        _("Server-driven routes require a Backend Handler Key")
+                    )
+                for route in server_routes:
+                    if route.condition or route.is_default:
+                        frappe.throw(
+                            _("Server-driven routes cannot have conditions or a default flag")
+                        )
+                client_routes = []
+
+            defaults = [route for route in client_routes if route.is_default]
             if len(defaults) > 1:
                 frappe.throw(_("Screen {0} has more than one default route").format(source))
-            if len(routes) > 4:
+            if len(client_routes) > 4:
                 frappe.throw(
                     _("Screen {0} exceeds the supported limit of three conditions plus a default route").format(source)
                 )
-            if len(routes) > 1 and not defaults:
+            if len(client_routes) > 1 and not defaults:
                 frappe.throw(_("Branching screen {0} requires a default route").format(source))
-            if len(routes) == 1 and routes[0].condition:
+            if len(client_routes) == 1 and client_routes[0].condition:
                 frappe.throw(
                     _("A single route on {0} cannot be conditional; add a default branch").format(source)
                 )
@@ -458,6 +552,8 @@ class WhatsAppFlow(Document):
                     frappe.throw(_("Route destination screen does not exist: {0}").format(route.destination_screen))
                 if route.destination_screen == source:
                     frappe.throw(_("A screen cannot route to itself: {0}").format(source))
+                if route.server_driven:
+                    continue
                 if route.is_default and route.condition:
                     frappe.throw(_("Default route on {0} cannot have a condition").format(source))
                 if not route.is_default and not route.condition and len(routes) > 1:
@@ -550,6 +646,14 @@ class WhatsAppFlow(Document):
             routes.setdefault(route.source_screen, []).append(route)
         return routes
 
+    def get_client_routes_by_source(self):
+        """Return only routes rendered as client-side Footer/If components."""
+        return {
+            source: [route for route in routes if not route.server_driven]
+            for source, routes in self.get_routes_by_source().items()
+            if any(not route.server_driven for route in routes)
+        }
+
     def get_route_graph(self):
         """Return explicit routes plus legacy table-order routes."""
         explicit = self.get_routes_by_source()
@@ -638,10 +742,13 @@ class WhatsAppFlow(Document):
 
     def build_screen(self, screen, incoming_data=None):
         """Build a single screen definition."""
+        screen_data_schema = self.parse_json_property(
+            screen.data_json, _("Screen Data Schema"), default=incoming_data or {}
+        )
         screen_data = {
             "id": screen.screen_id,
             "title": screen.screen_title,
-            "data": incoming_data or {},
+            "data": screen_data_schema,
             "layout": {
                 "type": "SingleColumnLayout",
                 "children": []
@@ -665,7 +772,7 @@ class WhatsAppFlow(Document):
         """Build field components for a screen."""
         children = []
         has_footer = False
-        explicit_routes = self.get_routes_by_source().get(screen.screen_id, [])
+        explicit_routes = self.get_client_routes_by_source().get(screen.screen_id, [])
 
         # Get fields that belong to this screen from the fields table
         for field in self.fields:
@@ -676,7 +783,23 @@ class WhatsAppFlow(Document):
 
             component = self.build_field_component(field, screen)
             if component:
-                children.append(component)
+                if field.form_name:
+                    if (
+                        children
+                        and children[-1].get("type") == "Form"
+                        and children[-1].get("name") == field.form_name
+                    ):
+                        children[-1]["children"].append(component)
+                    else:
+                        children.append(
+                            {
+                                "type": "Form",
+                                "name": field.form_name,
+                                "children": [component],
+                            }
+                        )
+                else:
+                    children.append(component)
                 if field.field_type == "Footer" and not explicit_routes:
                     has_footer = True
 
@@ -760,7 +883,15 @@ class WhatsAppFlow(Document):
 
         # Footer (submit button)
         if field_type == "Footer":
-            action = self.build_footer_action(field, screen)
+            if field.action_name in ("data_exchange", "complete"):
+                action = {
+                    "name": field.action_name,
+                    "payload": self.parse_json_property(
+                        field.action_payload, _("Action Payload"), default={}
+                    ),
+                }
+            else:
+                action = self.build_footer_action(field, screen)
             return {
                 "type": "Footer",
                 "label": field.label or "Submit",
@@ -783,6 +914,9 @@ class WhatsAppFlow(Document):
         if field.init_value:
             component["init-value"] = field.init_value
 
+        if field_type == "TextInput" and field.input_type:
+            component["input-type"] = field.input_type
+
         # Text input specific
         if field_type in ["TextInput", "TextArea"]:
             if field.min_chars:
@@ -794,9 +928,11 @@ class WhatsAppFlow(Document):
 
         # Options for dropdown/radio/checkbox
         if field_type in ["Dropdown", "RadioButtonsGroup", "CheckboxGroup"]:
-            options = self.parse_options(field.options)
-            if options:
-                component["data-source"] = options
+            data_source = self.parse_json_property(
+                field.options, _("Options"), default=[]
+            )
+            if data_source:
+                component["data-source"] = data_source
 
         # OptIn specific
         if field_type == "OptIn":
@@ -872,6 +1008,15 @@ class WhatsAppFlow(Document):
             return []
         except json.JSONDecodeError:
             return []
+
+    def parse_json_property(self, value, label, default=None):
+        """Parse a JSON-backed structured field without restricting its value type."""
+        if not value:
+            return default
+        try:
+            return json.loads(value)
+        except (TypeError, json.JSONDecodeError) as exc:
+            frappe.throw(_("{0} is invalid JSON: {1}").format(label, str(exc)))
 
     @frappe.whitelist()
     def create_on_whatsapp(self):
@@ -1543,54 +1688,14 @@ def sync_all_flows(whatsapp_account):
 
 
 def parse_flow_json_to_screens(flow_doc, flow_json):
-    """Parse flow JSON and create screens and fields in the document.
-
-    Args:
-        flow_doc: WhatsApp Flow document
-        flow_json: Parsed flow JSON dict
-    """
-    screens = flow_json.get("screens", [])
-
-    for screen_data in screens:
-        # Add screen
-        flow_doc.append("screens", {
-            "screen_id": screen_data.get("id"),
-            "screen_title": screen_data.get("title", ""),
-            "terminal": 1 if screen_data.get("terminal") else 0,
-            "refresh_on_back": 1 if screen_data.get("refresh_on_back") else 0
-        })
-
-        # Parse fields from layout
-        layout = screen_data.get("layout", {})
-        children = layout.get("children", [])
-
-        for child in children:
-            field_type = child.get("type")
-            if not field_type:
-                continue
-
-            # Map WhatsApp field types to our field types
-            field_data = {
-                "screen": screen_data.get("id"),
-                "field_type": field_type,
-                "field_name": child.get("name", field_type.lower()),
-                "label": child.get("label") or child.get("text", ""),
-                "required": 1 if child.get("required") else 0,
-                "enabled": 1,
-                "helper_text": child.get("helper-text", ""),
-                "init_value": child.get("init-value", ""),
-                "min_chars": child.get("min-chars"),
-                "max_chars": child.get("max-chars"),
-                "error_message": child.get("error-message", "")
-            }
-
-            # Handle options for dropdowns
-            if field_type in ["Dropdown", "RadioButtonsGroup", "CheckboxGroup"]:
-                data_source = child.get("data-source", [])
-                if data_source:
-                    field_data["options"] = json.dumps(data_source)
-
-            flow_doc.append("fields", field_data)
+    """Populate a best-effort structured summary while preserving imported Raw JSON."""
+    try:
+        parsed = parse_flow_json_to_structured(flow_json)
+    except frappe.ValidationError:
+        return
+    flow_doc.set("screens", parsed["screens"])
+    flow_doc.set("routes", parsed["routes"])
+    flow_doc.set("fields", parsed["fields"])
 
 
 @frappe.whitelist()

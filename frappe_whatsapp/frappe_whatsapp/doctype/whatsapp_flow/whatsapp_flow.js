@@ -217,6 +217,7 @@ frappe.ui.form.on("WhatsApp Flow", {
     },
 
     authoring_mode(frm) {
+        frm.__authoring_mode_changed = true;
         if (frm.doc.authoring_mode === "Raw JSON") {
             frappe.show_alert({
                 message: __("Saving will convert the current structured tables into editable Raw JSON."),
@@ -228,6 +229,12 @@ frappe.ui.form.on("WhatsApp Flow", {
                 indicator: "blue"
             });
         }
+    },
+
+    after_save(frm) {
+        if (!frm.__authoring_mode_changed) return;
+        frm.__authoring_mode_changed = false;
+        frm.reload_doc();
     }
 });
 

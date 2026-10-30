@@ -518,6 +518,102 @@ class TestWhatsAppFlow(FrappeTestCase):
         with self.assertRaises(frappe.ValidationError):
             parse_flow_json_to_structured(raw_json)
 
+    def test_dynamic_form_json_round_trips_through_structured_tables(self):
+        """Form containers and server-driven Data Exchange remain lossless."""
+        from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_flow.whatsapp_flow import (
+            parse_flow_json_to_structured,
+        )
+
+        raw_json = {
+            "version": "7.3",
+            "data_api_version": "3.0",
+            "routing_model": {"FORM": ["DONE"], "DONE": []},
+            "screens": [
+                {
+                    "id": "FORM",
+                    "title": "Details",
+                    "data": {
+                        "states": {
+                            "type": "array",
+                            "items": {"type": "object"},
+                            "__example__": [],
+                        }
+                    },
+                    "layout": {
+                        "type": "SingleColumnLayout",
+                        "children": [{
+                            "type": "Form",
+                            "name": "details_form",
+                            "children": [
+                                {
+                                    "type": "TextInput",
+                                    "name": "postal_code",
+                                    "label": "Postal code",
+                                    "required": True,
+                                    "input-type": "number",
+                                },
+                                {
+                                    "type": "Dropdown",
+                                    "name": "state",
+                                    "label": "State",
+                                    "data-source": "${data.states}",
+                                },
+                                {
+                                    "type": "Footer",
+                                    "label": "Continue",
+                                    "on-click-action": {
+                                        "name": "data_exchange",
+                                        "payload": {
+                                            "postal_code": "${form.postal_code}",
+                                            "state": "${form.state}",
+                                        },
+                                    },
+                                },
+                            ],
+                        }],
+                    },
+                },
+                {
+                    "id": "DONE",
+                    "title": "Done",
+                    "data": {"postal_code": {"type": "string", "__example__": ""}},
+                    "terminal": True,
+                    "success": True,
+                    "layout": {
+                        "type": "SingleColumnLayout",
+                        "children": [{
+                            "type": "Footer",
+                            "label": "Complete",
+                            "on-click-action": {
+                                "name": "complete",
+                                "payload": {"postal_code": "${data.postal_code}"},
+                            },
+                        }],
+                    },
+                },
+            ],
+        }
+        parsed = parse_flow_json_to_structured(raw_json)
+        flow = frappe.get_doc({
+            "doctype": "WhatsApp Flow",
+            "flow_name": "Test Dynamic Form Round Trip",
+            "whatsapp_account": "Test Account",
+            "category": "OTHER",
+            "handler_key": "test_dynamic_form",
+            "flow_json_version": "7.3",
+            "data_api_version": "3.0",
+            "screens": parsed["screens"],
+            "routes": parsed["routes"],
+            "fields": parsed["fields"],
+        })
+
+        self.assertEqual(flow.generate_flow_json(), raw_json)
+        self.assertTrue(all(route.server_driven for route in flow.routes))
+        self.assertEqual(flow.fields[0].form_name, "details_form")
+        self.assertEqual(flow.fields[0].input_type, "number")
+        self.assertEqual(json.loads(flow.fields[1].options), "${data.states}")
+        self.assertEqual(flow.fields[2].action_name, "data_exchange")
+
     def test_phone_number_availability(self):
         """Selected availability allows only configured numbers in the WABA."""
         account_name = "Test Account Secondary"
