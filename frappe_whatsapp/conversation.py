@@ -4,6 +4,7 @@
 """Declarative, stateful WhatsApp conversation runtime."""
 
 import json
+import hashlib
 import re
 
 import frappe
@@ -140,7 +141,7 @@ def execute_from_step(script, session, step_id, incoming_message=None):
 	"""Execute actions until a step waits, hands off, ends, or reaches the safety cap."""
 	steps = {step.step_id: step for step in script.steps}
 	current_id = step_id
-	for _ in range(MAX_AUTOMATIC_STEPS):
+	for execution_sequence in range(MAX_AUTOMATIC_STEPS):
 		step = steps.get(current_id)
 		if not step:
 			frappe.throw(_("Conversation step does not exist: {0}").format(current_id))
@@ -149,12 +150,22 @@ def execute_from_step(script, session, step_id, incoming_message=None):
 		context = parse_context(session.context_json)
 
 		if step.action_type == "Send Text":
-			send_message(session, "text", render_text(step.message, context))
+			send_message(
+				session,
+				"text",
+				render_text(step.message, context),
+				incoming_message=incoming_message,
+				step_id=current_id,
+				sequence=execution_sequence,
+			)
 		elif step.action_type == "Send Options":
 			send_message(
 				session,
 				"interactive",
 				render_text(step.message, context),
+				incoming_message=incoming_message,
+				step_id=current_id,
+				sequence=execution_sequence,
 				buttons=step.options or "[]",
 			)
 		elif step.action_type == "Launch Flow":
@@ -162,6 +173,9 @@ def execute_from_step(script, session, step_id, incoming_message=None):
 				session,
 				"flow",
 				render_text(step.message, context),
+				incoming_message=incoming_message,
+				step_id=current_id,
+				sequence=execution_sequence,
 				flow=step.flow,
 				flow_action=step.flow_action or "navigate",
 			)
@@ -241,7 +255,31 @@ def dispatch_handler(handler_key, script, session, incoming_message, context):
 	return result
 
 
-def send_message(session, content_type, message, **values):
+def send_message(
+	session,
+	content_type,
+	message,
+	*,
+	incoming_message,
+	step_id,
+	sequence,
+	**values,
+):
+	"""Persist a deferred outgoing message and durable execution record."""
+	if not incoming_message:
+		frappe.throw(_("Conversation sends require an originating incoming message"))
+	execution_key = hashlib.sha256(
+		f"{incoming_message.name}|{session.name}|{step_id}|{sequence}".encode()
+	).hexdigest()
+	existing = frappe.db.get_value(
+		"WhatsApp Conversation Outbox",
+		{"execution_key": execution_key},
+		["name", "outgoing_message"],
+		as_dict=True,
+	)
+	if existing:
+		return frappe.get_doc("WhatsApp Message", existing.outgoing_message)
+
 	payload = {
 		"doctype": "WhatsApp Message",
 		"type": "Outgoing",
@@ -250,9 +288,117 @@ def send_message(session, content_type, message, **values):
 		"content_type": content_type,
 		"message": message or "",
 		"conversation_session": session.name,
+		"defer_send": 1,
 	}
 	payload.update(values)
-	return frappe.get_doc(payload).insert(ignore_permissions=True)
+	outgoing = frappe.get_doc(payload).insert(ignore_permissions=True)
+	outbox = frappe.get_doc(
+		{
+			"doctype": "WhatsApp Conversation Outbox",
+			"execution_key": execution_key,
+			"status": "Pending",
+			"conversation_session": session.name,
+			"incoming_message": incoming_message.name,
+			"step_id": step_id,
+			"outgoing_message": outgoing.name,
+		}
+	).insert(ignore_permissions=True)
+	frappe.enqueue(
+		"frappe_whatsapp.conversation.deliver_outbox",
+		outbox_name=outbox.name,
+		queue="short",
+		enqueue_after_commit=True,
+		job_id=f"whatsapp-conversation-outbox-{outbox.name}",
+		deduplicate=True,
+	)
+	return outgoing
+
+
+def deliver_outbox(outbox_name):
+	"""Claim one durable outgoing action and contact Meta at most once automatically."""
+	outbox = frappe.get_doc("WhatsApp Conversation Outbox", outbox_name, for_update=True)
+	if outbox.status != "Pending":
+		return outbox.status
+
+	outbox.status = "Sending"
+	outbox.claimed_on = now_datetime()
+	outbox.attempts = (outbox.attempts or 0) + 1
+	outbox.save(ignore_permissions=True)
+	frappe.db.set_value(
+		"WhatsApp Message",
+		outbox.outgoing_message,
+		"status",
+		"Sending",
+		update_modified=False,
+	)
+	# The claim must survive a worker crash after Meta accepts the request.
+	frappe.db.commit()  # nosemgrep: frappe-manual-commit -- durable pre-send claim prevents automatic replay
+
+	try:
+		outgoing = frappe.get_doc("WhatsApp Message", outbox.outgoing_message)
+		outgoing.defer_send = 0
+		outgoing.send_outgoing()
+		frappe.db.set_value(
+			"WhatsApp Message",
+			outgoing.name,
+			{"message_id": outgoing.message_id, "status": outgoing.status},
+			update_modified=False,
+		)
+		frappe.db.set_value(
+			"WhatsApp Conversation Outbox",
+			outbox.name,
+			{
+				"status": "Sent",
+				"sent_on": now_datetime(),
+				"last_error": None,
+			},
+			update_modified=False,
+		)
+		return "Sent"
+	except Exception as exc:
+		# Delivery outcome may be ambiguous after any network exception. Never
+		# auto-replay it; an operator can explicitly accept that risk and retry.
+		frappe.db.rollback()
+		frappe.db.set_value(
+			"WhatsApp Conversation Outbox",
+			outbox.name,
+			{
+				"status": "Unknown",
+				"last_error": type(exc).__name__,
+			},
+			update_modified=False,
+		)
+		frappe.db.set_value(
+			"WhatsApp Message",
+			outbox.outgoing_message,
+			"status",
+			"Unknown",
+			update_modified=False,
+		)
+		frappe.db.commit()  # nosemgrep: frappe-manual-commit -- preserve ambiguous outcome before worker exits
+		frappe.log_error(
+			message=f"outbox={outbox.name}; outgoing_message={outbox.outgoing_message}",
+			title="WhatsApp Conversation Delivery Outcome Unknown",
+		)
+		return "Unknown"
+
+
+def enqueue_pending_outbox():
+	"""Recover durable Pending records if their original enqueue was interrupted."""
+	for outbox_name in frappe.get_all(
+		"WhatsApp Conversation Outbox",
+		filters={"status": "Pending"},
+		pluck="name",
+		order_by="creation asc",
+		limit=100,
+	):
+		frappe.enqueue(
+			"frappe_whatsapp.conversation.deliver_outbox",
+			outbox_name=outbox_name,
+			queue="short",
+			job_id=f"whatsapp-conversation-outbox-{outbox_name}",
+			deduplicate=True,
+		)
 
 
 def render_text(template, context):

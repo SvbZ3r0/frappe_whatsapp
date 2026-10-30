@@ -24,6 +24,7 @@
   "conversation_id",
   "conversation_session",
   "conversation_processed",
+  "defer_send",
   "content_type",
   "attach",
   "buttons",
@@ -103,6 +104,14 @@
    "fieldname": "template_parameters",
    "fieldtype": "Small Text",
    "label": "Template Parameters",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "defer_send",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "label": "Defer Send",
    "read_only": 1
   },
   {

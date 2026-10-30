@@ -201,7 +201,9 @@ For `INIT`, `data_exchange`, and `BACK`, the encrypted `flow_token` must match a
 
 **WhatsApp Conversation Script** provides local, stateful message journeys without publishing an artifact to Meta. Define an entry trigger, ordered steps, and reply transitions using Structured tables or synchronized JSON. Supported steps can send text, buttons/lists, launch a WhatsApp Flow, invoke an allowlisted installed-app action, hand off, or finish.
 
-Each active customer journey is persisted as a **WhatsApp Conversation Session**, scoped by WhatsApp Account and phone number. Incoming messages advance the current step after the webhook transaction commits; message-level processing markers make retries idempotent. Exact, contains, regex, content-type, any, and default transitions are supported, with optional context capture and `{{ variable }}` substitution in outgoing text.
+Each active customer journey is persisted as a **WhatsApp Conversation Session**, scoped by WhatsApp Account and phone number. Incoming messages advance the current step after the webhook transaction commits. Exact, contains, regex, content-type, any, and default transitions are supported, with optional context capture and `{{ variable }}` substitution in outgoing text.
+
+Conversation sends use a durable **WhatsApp Conversation Outbox**. The outgoing `WhatsApp Message`, unique incoming-message/step execution key, session transition, and processed marker commit before a separate worker contacts Meta. Delivery is durably claimed as `Sending` first. If the worker cannot prove whether Meta accepted the request, the entry becomes `Unknown` and is never retried automatically; a System Manager may explicitly retry after accepting the duplicate-delivery risk.
 
 Custom actions use declarative hook keys rather than Server Scripts:
 

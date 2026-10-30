@@ -25,6 +25,48 @@ class TestWhatsAppConversation(FrappeTestCase):
 				}
 			).insert(ignore_permissions=True)
 
+	def setUp(self):
+		self.cleanup_conversation_data()
+
+	def tearDown(self):
+		self.cleanup_conversation_data()
+		super().tearDown()
+
+	def cleanup_conversation_data(self):
+		sessions = frappe.get_all(
+			"WhatsApp Conversation Session",
+			filters={"whatsapp_account": "Conversation Test Account"},
+			pluck="name",
+		)
+		if sessions:
+			frappe.db.delete(
+				"WhatsApp Conversation Outbox",
+				{"conversation_session": ["in", sessions]},
+			)
+			frappe.db.delete(
+				"WhatsApp Message",
+				{"conversation_session": ["in", sessions]},
+			)
+		frappe.db.delete(
+			"WhatsApp Message",
+			{"message_id": ["like", "conversation-%"]},
+		)
+		frappe.db.delete(
+			"WhatsApp Conversation Session",
+			{"whatsapp_account": "Conversation Test Account"},
+		)
+		for script_name in frappe.get_all(
+			"WhatsApp Conversation Script",
+			filters={"name": ["like", "Conversation%"]},
+			pluck="name",
+		):
+			frappe.delete_doc(
+				"WhatsApp Conversation Script",
+				script_name,
+				force=True,
+				ignore_permissions=True,
+			)
+
 	def make_script(self, name="Conversation Test Script"):
 		return frappe.get_doc(
 			{
@@ -136,6 +178,108 @@ class TestWhatsAppConversation(FrappeTestCase):
 
 		self.assertEqual(first, second)
 		send.assert_called_once()
+
+	def test_outgoing_action_is_durable_before_meta_delivery(self):
+		from frappe_whatsapp import conversation
+		from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_message.whatsapp_message import (
+			WhatsAppMessage,
+		)
+
+		self.make_script("Conversation Durable Outbox Test").insert(ignore_permissions=True)
+		message = self.make_incoming("start", "conversation-outbox")
+		with patch.object(WhatsAppMessage, "send_outgoing") as direct_send, patch(
+			"frappe.enqueue"
+		) as enqueue:
+			session_name = conversation.process_incoming_message(message.name)
+
+		direct_send.assert_not_called()
+		outbox = frappe.get_last_doc("WhatsApp Conversation Outbox")
+		outgoing = frappe.get_doc("WhatsApp Message", outbox.outgoing_message)
+		self.assertEqual(outbox.status, "Pending")
+		self.assertEqual(outbox.conversation_session, session_name)
+		self.assertEqual(outbox.incoming_message, message.name)
+		self.assertEqual(outgoing.status, "Queued")
+		self.assertEqual(outgoing.defer_send, 1)
+		enqueue.assert_called_once()
+
+		conversation.process_incoming_message(message.name)
+		self.assertEqual(
+			frappe.db.count(
+				"WhatsApp Conversation Outbox",
+				{"incoming_message": message.name},
+			),
+			1,
+		)
+
+	def test_ambiguous_delivery_is_not_automatically_retried(self):
+		from frappe_whatsapp import conversation
+		from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_message.whatsapp_message import (
+			WhatsAppMessage,
+		)
+
+		self.make_script("Conversation Ambiguous Delivery Test").insert(ignore_permissions=True)
+		message = self.make_incoming("start", "conversation-ambiguous")
+		with patch("frappe.enqueue"):
+			conversation.process_incoming_message(message.name)
+		outbox = frappe.get_last_doc("WhatsApp Conversation Outbox")
+
+		with patch.object(
+			WhatsAppMessage,
+			"send_outgoing",
+			side_effect=ConnectionError("response lost"),
+		) as send, patch.object(frappe.db, "commit"), patch.object(
+			frappe.db, "rollback"
+		), patch("frappe.log_error"):
+			self.assertEqual(conversation.deliver_outbox(outbox.name), "Unknown")
+			self.assertEqual(conversation.deliver_outbox(outbox.name), "Unknown")
+
+		self.assertEqual(send.call_count, 1)
+		outbox.reload()
+		self.assertEqual(outbox.status, "Unknown")
+		self.assertEqual(outbox.attempts, 1)
+
+	def test_successful_outbox_delivery_persists_meta_message_id(self):
+		from frappe_whatsapp import conversation
+		from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_message.whatsapp_message import (
+			WhatsAppMessage,
+		)
+
+		self.make_script("Conversation Successful Delivery Test").insert(ignore_permissions=True)
+		message = self.make_incoming("start", "conversation-delivered")
+		with patch("frappe.enqueue"):
+			conversation.process_incoming_message(message.name)
+		outbox = frappe.get_last_doc("WhatsApp Conversation Outbox")
+
+		def accept_at_meta(outgoing):
+			outgoing.message_id = "wamid.conversation-delivered"
+			outgoing.status = "Success"
+
+		with patch.object(
+			WhatsAppMessage, "send_outgoing", autospec=True, side_effect=accept_at_meta
+		), patch.object(frappe.db, "commit"), patch.object(frappe.db, "rollback"):
+			self.assertEqual(conversation.deliver_outbox(outbox.name), "Sent")
+
+		outbox.reload()
+		outgoing = frappe.get_doc("WhatsApp Message", outbox.outgoing_message)
+		self.assertEqual(outbox.status, "Sent")
+		self.assertEqual(outbox.attempts, 1)
+		self.assertEqual(outgoing.status, "Success")
+		self.assertEqual(outgoing.message_id, "wamid.conversation-delivered")
+
+	def test_pending_outbox_sweeper_requeues_with_deduplication(self):
+		from frappe_whatsapp.conversation import enqueue_pending_outbox
+
+		with patch("frappe.get_all", return_value=["outbox-1", "outbox-2"]), patch(
+			"frappe.enqueue"
+		) as enqueue:
+			enqueue_pending_outbox()
+
+		self.assertEqual(enqueue.call_count, 2)
+		self.assertTrue(all(call.kwargs["deduplicate"] for call in enqueue.call_args_list))
+		self.assertEqual(
+			enqueue.call_args_list[0].kwargs["job_id"],
+			"whatsapp-conversation-outbox-outbox-1",
+		)
 
 	def test_json_and_tables_synchronize_with_json_priority(self):
 		script = self.make_script("Conversation Authoring Sync")

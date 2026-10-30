@@ -93,7 +93,10 @@ class WhatsAppMessage(Document):
         # since message_type is read_only and cannot be set from the UI.
         if self.template:
             self.message_type = "Template"
-        self.send_outgoing()
+        if self.type == "Outgoing" and self.defer_send:
+            self.status = "Queued"
+        else:
+            self.send_outgoing()
         self.create_whatsapp_profile()
 
     def send_outgoing(self):
