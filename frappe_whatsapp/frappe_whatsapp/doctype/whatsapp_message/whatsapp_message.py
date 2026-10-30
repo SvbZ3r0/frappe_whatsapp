@@ -11,6 +11,8 @@ from frappe_whatsapp.utils import get_whatsapp_account, format_number
 class WhatsAppMessage(Document):
     def validate(self):
         self.set_whatsapp_account()
+        if self.flow_cta and len(self.flow_cta) > 20:
+            frappe.throw(_("Flow Call to Action cannot exceed 20 characters"))
 
     def on_update(self):
         self.update_profile_name()

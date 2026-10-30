@@ -5,6 +5,7 @@ import json
 import re
 
 import frappe
+import regex as safe_regex
 from frappe import _
 from frappe.model.document import Document
 
@@ -43,6 +44,14 @@ DEFAULT_SESSION_CONFIG = {
 	"cancel_keywords": ["cancel", "stop"],
 	"unmatched_message_policy": "Retry",
 }
+MAX_REGEX_LENGTH = 512
+TEXT_MESSAGE_MAX_LENGTH = 4096
+INTERACTIVE_BODY_MAX_LENGTH = 1024
+REPLY_BUTTON_ID_MAX_LENGTH = 256
+REPLY_BUTTON_TITLE_MAX_LENGTH = 20
+LIST_ROW_ID_MAX_LENGTH = 200
+LIST_ROW_TITLE_MAX_LENGTH = 24
+LIST_ROW_DESCRIPTION_MAX_LENGTH = 72
 
 
 class WhatsAppConversationScript(Document):
@@ -254,6 +263,11 @@ class WhatsAppConversationScript(Document):
 				options = self.parse_json_value(step.options, _("Options"), [])
 				if not isinstance(options, list) or not 1 <= len(options) <= 10:
 					frappe.throw(_("Send Options requires between 1 and 10 options"))
+				validate_options(options, step.step_id)
+			if step.action_type == "Send Text":
+				validate_message_length(step.message, step.step_id, TEXT_MESSAGE_MAX_LENGTH)
+			if step.action_type in ("Send Options", "Launch Flow"):
+				validate_message_length(step.message, step.step_id, INTERACTIVE_BODY_MAX_LENGTH)
 			if step.action_type == "Launch Flow" and not step.flow:
 				frappe.throw(_("Launch Flow step {0} requires a Flow").format(step.step_id))
 			if step.action_type == "Run Handler":
@@ -342,10 +356,57 @@ def json_values_match(left, right):
 
 
 def validate_regex(pattern, label):
+	if len(pattern or "") > MAX_REGEX_LENGTH:
+		frappe.throw(_("{0} regex cannot exceed {1} characters").format(label, MAX_REGEX_LENGTH))
 	try:
-		re.compile(pattern)
-	except re.error as exc:
+		safe_regex.compile(pattern, flags=safe_regex.VERSION0)
+	except safe_regex.error as exc:
 		frappe.throw(_("{0} regex is invalid: {1}").format(label, str(exc)))
+
+
+def validate_message_length(message, step_id, maximum):
+	if not message:
+		frappe.throw(_("Step {0} requires a message").format(step_id))
+	if len(message) > maximum:
+		frappe.throw(
+			_("Step {0} message exceeds the WhatsApp limit of {1} characters").format(
+				step_id, maximum
+			)
+		)
+
+
+def validate_options(options, step_id):
+	button_mode = len(options) <= 3
+	seen_ids = set()
+	for index, option in enumerate(options, start=1):
+		if not isinstance(option, dict):
+			frappe.throw(_("Option {0} in step {1} must be an object").format(index, step_id))
+		option_id = option.get("id")
+		title = option.get("title")
+		description = option.get("description", "")
+		if not isinstance(option_id, str) or not option_id.strip():
+			frappe.throw(_("Option {0} in step {1} requires a string ID").format(index, step_id))
+		if not isinstance(title, str) or not title.strip():
+			frappe.throw(_("Option {0} in step {1} requires a string title").format(index, step_id))
+		if not isinstance(description, str):
+			frappe.throw(_("Option {0} in step {1} description must be a string").format(index, step_id))
+		if option_id in seen_ids:
+			frappe.throw(_("Option IDs must be unique in step {0}").format(step_id))
+		seen_ids.add(option_id)
+		id_limit = REPLY_BUTTON_ID_MAX_LENGTH if button_mode else LIST_ROW_ID_MAX_LENGTH
+		title_limit = REPLY_BUTTON_TITLE_MAX_LENGTH if button_mode else LIST_ROW_TITLE_MAX_LENGTH
+		if len(option_id) > id_limit:
+			frappe.throw(_("Option {0} ID exceeds the WhatsApp limit of {1} characters").format(index, id_limit))
+		if len(title) > title_limit:
+			frappe.throw(_("Option {0} title exceeds the WhatsApp limit of {1} characters").format(index, title_limit))
+		if button_mode and description:
+			frappe.throw(_("Descriptions require at least four options so WhatsApp uses a list"))
+		if len(description) > LIST_ROW_DESCRIPTION_MAX_LENGTH:
+			frappe.throw(
+				_("Option {0} description exceeds the WhatsApp limit of {1} characters").format(
+					index, LIST_ROW_DESCRIPTION_MAX_LENGTH
+				)
+			)
 
 
 def parse_keywords(value):

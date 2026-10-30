@@ -427,6 +427,8 @@ class WhatsAppFlow(Document):
     def validate(self):
         """Validate flow configuration."""
         self.sync_authoring_representations()
+        if self.flow_cta and len(self.flow_cta) > 20:
+            frappe.throw(_("Flow Call to Action cannot exceed 20 characters"))
         self.validate_screens()
         self.validate_routes()
         self.validate_available_accounts()

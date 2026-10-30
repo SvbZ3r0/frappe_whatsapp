@@ -86,6 +86,32 @@ class TestWhatsAppFlow(FrappeTestCase):
         self.assertNotIn("routing_model", flow_json)
         self.assertNotIn("data_api_version", flow_json)
 
+    def test_flow_cta_respects_whatsapp_length_limit(self):
+        """Reject Flow launch button labels longer than Meta permits."""
+        flow = frappe.get_doc({
+            "doctype": "WhatsApp Flow",
+            "flow_name": "Test Long Flow CTA",
+            "whatsapp_account": "Test Account",
+            "category": "OTHER",
+            "flow_cta": "x" * 21,
+            "flow_json_version": "7.3",
+            "data_api_version": "3.0",
+            "screens": [{
+                "screen_id": "WELCOME",
+                "screen_title": "Welcome",
+                "terminal": 1,
+            }],
+            "fields": [{
+                "screen": "WELCOME",
+                "field_name": "heading",
+                "field_type": "TextHeading",
+                "label": "Welcome",
+                "enabled": 1,
+            }],
+        })
+        with self.assertRaisesRegex(frappe.ValidationError, "20 characters"):
+            flow.insert(ignore_permissions=True)
+
     def test_multi_screen_flow_json_generation(self):
         """Test flow JSON generation for multi-screen flow."""
         screens = [
@@ -693,6 +719,18 @@ class TestWhatsAppFlow(FrappeTestCase):
 
 class TestWhatsAppFlowMessage(FrappeTestCase):
     """Test cases for sending WhatsApp Flow messages."""
+
+    def test_message_flow_cta_respects_whatsapp_length_limit(self):
+        message = frappe.get_doc({
+            "doctype": "WhatsApp Message",
+            "type": "Outgoing",
+            "to": "15555550107",
+            "content_type": "flow",
+            "flow_cta": "x" * 21,
+            "whatsapp_account": "Test Account",
+        })
+        with self.assertRaisesRegex(frappe.ValidationError, "20 characters"):
+            message.validate()
 
     def test_flow_message_structure(self):
         """Test the structure of flow message data."""

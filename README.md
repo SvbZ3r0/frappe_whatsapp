@@ -203,6 +203,8 @@ For `INIT`, `data_exchange`, and `BACK`, the encrypted `flow_token` must match a
 
 Each active customer journey is persisted as a **WhatsApp Conversation Session**, scoped by WhatsApp Account and phone number. Incoming messages advance the current step after the webhook transaction commits. Exact, contains, regex, content-type, any, and default transitions are supported, with optional context capture and `{{ variable }}` substitution in outgoing text.
 
+Script validation enforces WhatsApp text, interactive-body, option ID/title/description, and Flow CTA limits before activation. User-defined regex matching has a hard execution timeout, and installed-app handler responses are schema-checked before they can update context, select a step, or terminate a session.
+
 Each script also defines its session lifecycle: idle timeout, maximum lifetime, maximum inbound-message count, restart and cancel keywords, and an unmatched-message policy (`Retry`, `Restart`, `Handoff`, or `Close`). Safe defaults expire sessions after 24 idle hours, seven total days, or 50 inbound messages; setting a numeric limit to `0` disables that limit. A scheduler expires idle sessions even when no new message arrives.
 
 The database enforces one active session per WhatsApp Account and normalized phone number through a unique active-session key. This is the concurrency guarantee for simultaneous first messages; application validation is not relied upon for uniqueness. Migration keeps the most recently active legacy session and closes older normalized duplicates.

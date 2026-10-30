@@ -66,6 +66,12 @@ class TestWhatsAppConversation(FrappeTestCase):
 				force=True,
 				ignore_permissions=True,
 			)
+		for flow_name in frappe.get_all(
+			"WhatsApp Flow",
+			filters={"name": ["like", "Conversation%"]},
+			pluck="name",
+		):
+			frappe.delete_doc("WhatsApp Flow", flow_name, force=True, ignore_permissions=True)
 
 	def make_script(self, name="Conversation Test Script"):
 		return frappe.get_doc(
@@ -135,6 +141,34 @@ class TestWhatsAppConversation(FrappeTestCase):
 			}
 		).insert(ignore_permissions=True)
 
+	def make_flow(self, name="Conversation Test Flow"):
+		return frappe.get_doc(
+			{
+				"doctype": "WhatsApp Flow",
+				"flow_name": name,
+				"whatsapp_account": "Conversation Test Account",
+				"category": "OTHER",
+				"flow_json_version": "7.3",
+				"data_api_version": "3.0",
+				"screens": [
+					{
+						"screen_id": "WELCOME",
+						"screen_title": "Welcome",
+						"terminal": 1,
+					}
+				],
+				"fields": [
+					{
+						"screen": "WELCOME",
+						"field_name": "heading",
+						"field_type": "TextHeading",
+						"label": "Welcome",
+						"enabled": 1,
+					}
+				],
+			}
+		).insert(ignore_permissions=True)
+
 	def test_processes_a_stateful_branched_conversation(self):
 		from frappe_whatsapp import conversation
 
@@ -178,6 +212,85 @@ class TestWhatsAppConversation(FrappeTestCase):
 
 		self.assertEqual(first, second)
 		send.assert_called_once()
+
+	def test_launches_flow_with_configured_action(self):
+		from frappe_whatsapp import conversation
+
+		flow = self.make_flow()
+		script = self.make_script("Conversation Flow Launch Test")
+		script.start_step = "FLOW"
+		script.set(
+			"steps",
+			[
+				{
+					"step_id": "FLOW",
+					"action_type": "Launch Flow",
+					"message": "Complete this form",
+					"flow": flow.name,
+					"flow_action": "data_exchange",
+					"wait_for_reply": 1,
+				},
+				{"step_id": "DONE", "action_type": "End", "wait_for_reply": 0},
+			],
+		)
+		script.set(
+			"transitions",
+			[
+				{
+					"source_step": "FLOW",
+					"match_type": "Any",
+					"destination_step": "DONE",
+					"priority": 10,
+				}
+			],
+		)
+		script.insert(ignore_permissions=True)
+
+		with patch.object(conversation, "send_message", return_value=frappe._dict(name="sent")) as send:
+			message = self.make_incoming("start", "conversation-flow-launch")
+			conversation.process_incoming_message(message.name)
+
+		self.assertEqual(send.call_args.args[1:3], ("flow", "Complete this form"))
+		self.assertEqual(send.call_args.kwargs["flow"], flow.name)
+		self.assertEqual(send.call_args.kwargs["flow_action"], "data_exchange")
+
+	def test_handoff_step_ends_automation(self):
+		from frappe_whatsapp import conversation
+
+		script = self.make_script("Conversation Step Handoff Test")
+		script.start_step = "HANDOFF"
+		script.set(
+			"steps",
+			[{"step_id": "HANDOFF", "action_type": "Handoff", "wait_for_reply": 0}],
+		)
+		script.set("transitions", [])
+		script.insert(ignore_permissions=True)
+
+		message = self.make_incoming("start", "conversation-step-handoff")
+		session_name = conversation.process_incoming_message(message.name)
+
+		session = frappe.get_doc("WhatsApp Conversation Session", session_name)
+		self.assertEqual(session.status, "Handed Off")
+		self.assertEqual(session.last_incoming_message, message.name)
+
+	def test_conflicting_entry_scripts_use_lowest_priority(self):
+		from frappe_whatsapp import conversation
+
+		slower = self.make_script("Conversation Conflict Priority 20")
+		slower.priority = 20
+		slower.insert(ignore_permissions=True)
+		winner = self.make_script("Conversation Conflict Priority 5")
+		winner.priority = 5
+		winner.insert(ignore_permissions=True)
+
+		with patch.object(conversation, "send_message", return_value=frappe._dict(name="sent")):
+			message = self.make_incoming("start", "conversation-conflicting-entry")
+			session_name = conversation.process_incoming_message(message.name)
+
+		self.assertEqual(
+			frappe.db.get_value("WhatsApp Conversation Session", session_name, "conversation_script"),
+			winner.name,
+		)
 
 	def test_restart_and_cancel_keywords_control_the_session(self):
 		from frappe_whatsapp import conversation
@@ -540,10 +653,60 @@ class TestWhatsAppConversation(FrappeTestCase):
 		self.assertEqual(script.steps[0].message, "JSON wins")
 		self.assertEqual(script.unmatched_message_policy, "Close")
 
+	def test_option_shape_and_whatsapp_limits_are_validated(self):
+		invalid_options = (
+			([{"id": "same", "title": "One"}, {"id": "same", "title": "Two"}], "unique"),
+			([{"id": "x", "title": "x" * 21}], "title"),
+			([{"id": "x" * 257, "title": "Valid"}], "ID"),
+			([{"id": "x", "title": "Valid", "description": "Ignored"}], "Descriptions"),
+			([{"id": "x", "title": "Valid"}, "not-an-object"], "object"),
+		)
+		for index, (options, expected) in enumerate(invalid_options):
+			with self.subTest(expected=expected):
+				script = self.make_script(f"Conversation Invalid Option {index}")
+				script.steps[0].options = json.dumps(options)
+				with self.assertRaisesRegex(frappe.ValidationError, expected):
+					script.insert(ignore_permissions=True)
+
+		list_script = self.make_script("Conversation Invalid List Description")
+		list_script.steps[0].options = json.dumps(
+			[
+				{"id": f"option-{index}", "title": f"Option {index}", "description": "x" * 73}
+				for index in range(4)
+			]
+		)
+		with self.assertRaisesRegex(frappe.ValidationError, "description"):
+			list_script.insert(ignore_permissions=True)
+
+	def test_message_length_limits_are_validated(self):
+		options_script = self.make_script("Conversation Long Interactive Body")
+		options_script.steps[0].message = "x" * 1025
+		with self.assertRaisesRegex(frappe.ValidationError, "1024"):
+			options_script.insert(ignore_permissions=True)
+
+		text_script = self.make_script("Conversation Long Text Body")
+		text_script.steps[1].message = "x" * 4097
+		with self.assertRaisesRegex(frappe.ValidationError, "4096"):
+			text_script.insert(ignore_permissions=True)
+
+	def test_regex_matching_has_length_and_runtime_bounds(self):
+		from frappe_whatsapp import conversation
+
+		script = self.make_script("Conversation Long Regex")
+		script.transitions[1].match_value = "a" * 513
+		with self.assertRaisesRegex(frappe.ValidationError, "512"):
+			script.insert(ignore_permissions=True)
+
+		message = frappe._dict(message="a" * 2000 + "!", content_type="text")
+		self.assertFalse(conversation.message_matches(message, "Regex", r"^(a+)+$"))
+		with patch.object(conversation.safe_regex, "search", side_effect=TimeoutError) as search:
+			self.assertFalse(conversation.message_matches(message, "Regex", r"^a+$"))
+		self.assertEqual(search.call_args.kwargs["timeout"], 0.05)
+
 	def test_handler_dispatch_requires_one_allowlisted_method(self):
 		from frappe_whatsapp.conversation import dispatch_handler
 
-		script = frappe._dict(name="Script")
+		script = frappe._dict(name="Script", steps=[frappe._dict(step_id="NEXT")])
 		session = frappe._dict(
 			name="Session",
 			whatsapp_account="Account",
@@ -558,3 +721,41 @@ class TestWhatsAppConversation(FrappeTestCase):
 
 		self.assertEqual(result, {"context": {"created": True}})
 		handler.assert_called_once()
+
+	def test_handler_response_contract_is_validated(self):
+		from frappe_whatsapp.conversation import dispatch_handler
+
+		script = frappe._dict(
+			name="Script",
+			steps=[frappe._dict(step_id="ACTION"), frappe._dict(step_id="NEXT")],
+		)
+		session = frappe._dict(
+			name="Session",
+			whatsapp_account="Account",
+			phone_number="9199",
+			current_step="ACTION",
+		)
+		invalid_results = (
+			({"context": []}, "context must be a dictionary"),
+			({"context": {"value": object()}}, "JSON serializable"),
+			({"next_step": "MISSING"}, "unknown next step"),
+			({"status": "Active"}, "invalid terminal status"),
+			({"status": "Completed", "next_step": "NEXT"}, "both status and next_step"),
+			({"typo": True}, "unsupported keys"),
+		)
+		for result, expected in invalid_results:
+			with self.subTest(expected=expected), patch(
+				"frappe.get_hooks", return_value={"action": ["app.handler"]}
+			), patch("frappe.get_attr", return_value=MagicMock(return_value=result)):
+				with self.assertRaisesRegex(frappe.ValidationError, expected):
+					dispatch_handler("action", script, session, None, {})
+
+		for result in (
+			{"next_step": "NEXT"},
+			{"status": "Completed"},
+			{"context": {"ok": True}},
+		):
+			with self.subTest(valid=result), patch(
+				"frappe.get_hooks", return_value={"action": ["app.handler"]}
+			), patch("frappe.get_attr", return_value=MagicMock(return_value=result)):
+				self.assertEqual(dispatch_handler("action", script, session, None, {}), result)

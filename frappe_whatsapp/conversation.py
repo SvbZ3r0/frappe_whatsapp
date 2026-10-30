@@ -8,6 +8,7 @@ import json
 import re
 
 import frappe
+import regex as safe_regex
 from frappe import _
 from frappe.utils import get_datetime, now_datetime
 
@@ -18,6 +19,7 @@ from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_conversation_session.whats
 
 
 MAX_AUTOMATIC_STEPS = 20
+REGEX_MATCH_TIMEOUT_SECONDS = 0.05
 
 
 def schedule_incoming_message(doc, event=None):
@@ -237,7 +239,17 @@ def message_matches(message, match_type, match_value=None):
 	if match_type == "Contains":
 		return value.casefold() in text.casefold()
 	if match_type == "Regex":
-		return bool(re.search(value, text, flags=re.IGNORECASE))
+		try:
+			return bool(
+				safe_regex.search(
+					value,
+					text,
+					flags=safe_regex.IGNORECASE | safe_regex.VERSION0,
+					timeout=REGEX_MATCH_TIMEOUT_SECONDS,
+				)
+			)
+		except TimeoutError:
+			return False
 	return False
 
 
@@ -356,6 +368,30 @@ def dispatch_handler(handler_key, script, session, incoming_message, context):
 		return {}
 	if not isinstance(result, dict):
 		frappe.throw(_("Conversation handlers must return a dictionary or None"))
+	unknown_keys = set(result) - {"context", "next_step", "status"}
+	if unknown_keys:
+		frappe.throw(
+			_("Conversation handler returned unsupported keys: {0}").format(
+				", ".join(sorted(unknown_keys))
+			)
+		)
+	context_update = result.get("context")
+	if context_update is not None:
+		if not isinstance(context_update, dict):
+			frappe.throw(_("Conversation handler context must be a dictionary"))
+		try:
+			json.dumps(context_update)
+		except (TypeError, ValueError):
+			frappe.throw(_("Conversation handler context must be JSON serializable"))
+	step_ids = {step.step_id for step in script.steps}
+	next_step = result.get("next_step")
+	if next_step is not None and next_step not in step_ids:
+		frappe.throw(_("Conversation handler returned an unknown next step"))
+	status = result.get("status")
+	if status is not None and status not in ("Completed", "Handed Off", "Failed"):
+		frappe.throw(_("Conversation handler returned an invalid terminal status"))
+	if status and next_step:
+		frappe.throw(_("Conversation handler cannot return both status and next_step"))
 	return result
 
 
