@@ -20,6 +20,13 @@ from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_conversation_session.whats
 
 MAX_AUTOMATIC_STEPS = 20
 REGEX_MATCH_TIMEOUT_SECONDS = 0.05
+DELIVERY_MUTATED_MESSAGE_FIELDS = (
+	"message_id",
+	"status",
+	"flow_token",
+	"template_parameters",
+	"defer_send",
+)
 
 
 def schedule_incoming_message(doc, event=None):
@@ -481,7 +488,10 @@ def deliver_outbox(outbox_name):
 		frappe.db.set_value(
 			"WhatsApp Message",
 			outgoing.name,
-			{"message_id": outgoing.message_id, "status": outgoing.status},
+			{
+				fieldname: outgoing.get(fieldname)
+				for fieldname in DELIVERY_MUTATED_MESSAGE_FIELDS
+			},
 			update_modified=False,
 		)
 		frappe.db.set_value(

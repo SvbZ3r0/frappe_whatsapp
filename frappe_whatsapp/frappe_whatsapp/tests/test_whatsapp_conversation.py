@@ -616,6 +616,71 @@ class TestWhatsAppConversation(FrappeTestCase):
 		self.assertEqual(outgoing.status, "Success")
 		self.assertEqual(outgoing.message_id, "wamid.conversation-delivered")
 
+	def test_flow_delivery_persists_generated_token_for_endpoint_correlation(self):
+		from frappe_whatsapp import conversation
+		from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_message.whatsapp_message import (
+			WhatsAppMessage,
+		)
+		from frappe_whatsapp.utils.webhook import get_outgoing_flow_message
+
+		flow = self.make_flow("Conversation Deferred Token Flow")
+		script = self.make_script("Conversation Deferred Flow Token Test")
+		script.start_step = "FLOW"
+		script.set(
+			"steps",
+			[
+				{
+					"step_id": "FLOW",
+					"action_type": "Launch Flow",
+					"message": "Complete this form",
+					"flow": flow.name,
+					"flow_action": "data_exchange",
+					"wait_for_reply": 1,
+				},
+				{"step_id": "DONE", "action_type": "End", "wait_for_reply": 0},
+			],
+		)
+		script.set(
+			"transitions",
+			[
+				{
+					"source_step": "FLOW",
+					"match_type": "Any",
+					"destination_step": "DONE",
+					"priority": 10,
+				}
+			],
+		)
+		script.insert(ignore_permissions=True)
+		message = self.make_incoming("start", "conversation-flow-token")
+		with patch("frappe.enqueue"):
+			conversation.process_incoming_message(message.name)
+		outbox = frappe.get_last_doc("WhatsApp Conversation Outbox")
+
+		def accept_flow_at_meta(outgoing):
+			outgoing.message_id = "wamid.conversation-flow-token"
+			outgoing.flow_token = "generated-flow-token"
+			outgoing.status = "Success"
+
+		with patch.object(
+			WhatsAppMessage,
+			"send_outgoing",
+			autospec=True,
+			side_effect=accept_flow_at_meta,
+		), patch.object(frappe.db, "commit"), patch.object(frappe.db, "rollback"):
+			self.assertEqual(conversation.deliver_outbox(outbox.name), "Sent")
+
+		outgoing = frappe.get_doc("WhatsApp Message", outbox.outgoing_message)
+		self.assertEqual(outgoing.flow_token, "generated-flow-token")
+		self.assertEqual(outgoing.defer_send, 0)
+		origin = get_outgoing_flow_message(
+			"generated-flow-token",
+			"Conversation Test Account",
+		)
+		self.assertIsNotNone(origin)
+		self.assertEqual(origin.name, outgoing.name)
+		self.assertEqual(origin.flow, flow.name)
+
 	def test_pending_outbox_sweeper_requeues_with_deduplication(self):
 		from frappe_whatsapp.conversation import enqueue_pending_outbox
 
