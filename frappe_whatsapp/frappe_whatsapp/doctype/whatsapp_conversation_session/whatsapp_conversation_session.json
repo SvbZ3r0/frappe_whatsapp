@@ -11,8 +11,11 @@
   "column_break_1",
   "whatsapp_account",
   "phone_number",
+  "active_session_key",
   "context_json",
   "last_incoming_message",
+  "message_count",
+  "ended_reason",
   "started_on",
   "last_activity_on"
  ],
@@ -31,7 +34,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Status",
-   "options": "Active\nCompleted\nHanded Off\nFailed",
+   "options": "Active\nCompleted\nHanded Off\nFailed\nCancelled\nClosed\nExpired",
    "reqd": 1,
    "search_index": 1
   },
@@ -63,6 +66,14 @@
    "search_index": 1
   },
   {
+   "fieldname": "active_session_key",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Active Session Key",
+   "read_only": 1,
+   "unique": 1
+  },
+  {
    "default": "{}",
    "fieldname": "context_json",
    "fieldtype": "Code",
@@ -74,6 +85,19 @@
    "fieldtype": "Link",
    "label": "Last Incoming Message",
    "options": "WhatsApp Message",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "message_count",
+   "fieldtype": "Int",
+   "label": "Incoming Message Count",
+   "read_only": 1
+  },
+  {
+   "fieldname": "ended_reason",
+   "fieldtype": "Small Text",
+   "label": "Ended Reason",
    "read_only": 1
   },
   {

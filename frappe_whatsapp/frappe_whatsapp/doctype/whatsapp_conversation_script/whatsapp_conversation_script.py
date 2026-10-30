@@ -27,17 +27,34 @@ TRANSITION_FIELDS = (
 	"priority",
 	"capture_as",
 )
+LIFECYCLE_FIELDS = (
+	"idle_timeout_minutes",
+	"maximum_lifetime_minutes",
+	"maximum_message_count",
+	"restart_keywords",
+	"cancel_keywords",
+	"unmatched_message_policy",
+)
+DEFAULT_SESSION_CONFIG = {
+	"idle_timeout_minutes": 1440,
+	"maximum_lifetime_minutes": 10080,
+	"maximum_message_count": 50,
+	"restart_keywords": ["restart", "start over"],
+	"cancel_keywords": ["cancel", "stop"],
+	"unmatched_message_policy": "Retry",
+}
 
 
 class WhatsAppConversationScript(Document):
 	def validate(self):
 		self.sync_authoring_representations()
 		self.validate_entry_trigger()
+		self.validate_lifecycle()
 		self.validate_steps_and_transitions()
 		self.validate_available_accounts()
 
 	def before_save(self):
-		self.script_json = json.dumps(self.get_script_json(), indent=2)
+		self.script_json = json.dumps(self.generate_script_json(), indent=2)
 
 	def get_script_json(self):
 		try:
@@ -56,6 +73,14 @@ class WhatsAppConversationScript(Document):
 				"value": self.entry_value or "",
 			},
 			"start_step": self.start_step,
+			"session": {
+				"idle_timeout_minutes": self.idle_timeout_minutes or 0,
+				"maximum_lifetime_minutes": self.maximum_lifetime_minutes or 0,
+				"maximum_message_count": self.maximum_message_count or 0,
+				"restart_keywords": parse_keywords(self.restart_keywords),
+				"cancel_keywords": parse_keywords(self.cancel_keywords),
+				"unmatched_message_policy": self.unmatched_message_policy or "Retry",
+			},
 			"steps": [
 				{
 					"id": step.step_id,
@@ -85,15 +110,37 @@ class WhatsAppConversationScript(Document):
 	def import_script_json(self):
 		value = self.get_script_json()
 		entry = value.get("entry") or {}
+		session = value.get("session") or {}
 		steps = value.get("steps")
 		transitions = value.get("transitions")
-		if not isinstance(entry, dict) or not isinstance(steps, list) or not isinstance(transitions, list):
+		if (
+			not isinstance(entry, dict)
+			or not isinstance(session, dict)
+			or not isinstance(steps, list)
+			or not isinstance(transitions, list)
+		):
 			frappe.throw(_("Conversation Script JSON requires entry, steps, and transitions"))
+		session = {**DEFAULT_SESSION_CONFIG, **session}
+		if not isinstance(session["restart_keywords"], list) or not isinstance(
+			session["cancel_keywords"], list
+		):
+			frappe.throw(_("Conversation Script JSON restart and cancel keywords must be arrays"))
+		if any(
+			not isinstance(keyword, str)
+			for keyword in session["restart_keywords"] + session["cancel_keywords"]
+		):
+			frappe.throw(_("Conversation Script JSON keywords must be strings"))
 
 		self.version = value.get("version") or 1
 		self.entry_match_type = entry.get("match")
 		self.entry_value = entry.get("value") or ""
 		self.start_step = value.get("start_step")
+		self.idle_timeout_minutes = session["idle_timeout_minutes"]
+		self.maximum_lifetime_minutes = session["maximum_lifetime_minutes"]
+		self.maximum_message_count = session["maximum_message_count"]
+		self.restart_keywords = "\n".join(session["restart_keywords"])
+		self.cancel_keywords = "\n".join(session["cancel_keywords"])
+		self.unmatched_message_policy = session.get("unmatched_message_policy") or "Retry"
 		self.set("steps", [])
 		self.set("transitions", [])
 		for step in steps:
@@ -127,7 +174,9 @@ class WhatsAppConversationScript(Document):
 				},
 			)
 
-		if self.generate_script_json() != value:
+		normalized_value = dict(value)
+		normalized_value["session"] = session
+		if self.generate_script_json() != normalized_value:
 			frappe.throw(
 				_("Conversation Script JSON cannot be represented losslessly by the structured editor")
 			)
@@ -155,6 +204,21 @@ class WhatsAppConversationScript(Document):
 			frappe.throw(_("Entry trigger value is required"))
 		if self.entry_match_type == "Regex":
 			validate_regex(self.entry_value, _("Entry trigger"))
+
+	def validate_lifecycle(self):
+		for fieldname, label in (
+			("idle_timeout_minutes", _("Idle Timeout")),
+			("maximum_lifetime_minutes", _("Maximum Lifetime")),
+			("maximum_message_count", _("Maximum Message Count")),
+		):
+			if (self.get(fieldname) or 0) < 0:
+				frappe.throw(_("{0} cannot be negative").format(label))
+		if self.unmatched_message_policy not in ("Retry", "Restart", "Handoff", "Close"):
+			frappe.throw(_("Select a valid unmatched-message policy"))
+		restart = set(parse_keywords(self.restart_keywords))
+		cancel = set(parse_keywords(self.cancel_keywords))
+		if restart & cancel:
+			frappe.throw(_("Restart and cancel keywords cannot overlap"))
 
 	def validate_steps_and_transitions(self):
 		if not self.steps:
@@ -258,6 +322,7 @@ def structured_state(doc):
 		"entry_match_type": doc.get("entry_match_type"),
 		"entry_value": doc.get("entry_value"),
 		"start_step": doc.get("start_step"),
+		**{fieldname: doc.get(fieldname) for fieldname in LIFECYCLE_FIELDS},
 		"steps": [
 			{fieldname: row.get(fieldname) for fieldname in STEP_FIELDS}
 			for row in (doc.get("steps") or [])
@@ -281,3 +346,11 @@ def validate_regex(pattern, label):
 		re.compile(pattern)
 	except re.error as exc:
 		frappe.throw(_("{0} regex is invalid: {1}").format(label, str(exc)))
+
+
+def parse_keywords(value):
+	if isinstance(value, list):
+		values = value
+	else:
+		values = (value or "").splitlines()
+	return list(dict.fromkeys(str(keyword).strip().casefold() for keyword in values if str(keyword).strip()))

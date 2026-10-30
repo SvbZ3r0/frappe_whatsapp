@@ -3,13 +3,18 @@
 
 """Declarative, stateful WhatsApp conversation runtime."""
 
-import json
 import hashlib
+import json
 import re
 
 import frappe
 from frappe import _
-from frappe.utils import now_datetime
+from frappe.utils import get_datetime, now_datetime
+
+from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_conversation_session.whatsapp_conversation_session import (
+	make_active_session_key,
+	normalize_phone_number,
+)
 
 
 MAX_AUTOMATIC_STEPS = 20
@@ -44,57 +49,156 @@ def process_incoming_message(message_name):
 
 	session = get_active_session(message.whatsapp_account, message.get("from"))
 	if session:
-		script = frappe.get_doc("WhatsApp Conversation Script", session.conversation_script)
-		if not script.enabled:
-			session.status = "Handed Off"
-			session.save(ignore_permissions=True)
-			mark_message_processed(message, session.name)
-			return session.name
-		transition = find_matching_transition(script, session.current_step, message)
-		if not transition:
-			mark_message_processed(message, session.name)
-			return session.name
+		result = process_active_session(message, session)
+	else:
+		result = start_matching_session(message)
+
+	mark_message_processed(message, result.name if result else None)
+	return result.name if result else None
+
+
+def get_active_session(whatsapp_account, phone_number, *, current_read=False):
+	active_key = make_active_session_key(whatsapp_account, phone_number)
+	name = frappe.db.get_value(
+		"WhatsApp Conversation Session",
+		{"active_session_key": active_key, "status": "Active"},
+		"name",
+		for_update=current_read,
+	)
+	if not name:
+		return None
+	session = frappe.get_doc("WhatsApp Conversation Session", name, for_update=True)
+	if session.status == "Active" and session.active_session_key == active_key:
+		return session
+	return None
+
+
+def process_active_session(message, session):
+	"""Apply commands, limits and transitions to a locked active session."""
+	script = frappe.get_doc("WhatsApp Conversation Script", session.conversation_script)
+	if not script.enabled:
+		record_session_activity(session, message)
+		end_session(session, "Handed Off", _("Conversation script was disabled"))
+		return session
+
+	if matches_keyword(message.message, script.cancel_keywords):
+		record_session_activity(session, message)
+		end_session(session, "Cancelled", _("Customer used a cancel keyword"))
+		return session
+	if matches_keyword(message.message, script.restart_keywords):
+		end_session(session, "Closed", _("Customer restarted the conversation"))
+		return start_session(script, message)
+
+	expiry_reason = get_session_expiry_reason(session, script)
+	if expiry_reason:
+		end_session(session, "Expired", expiry_reason)
+		return start_matching_session(message, fallback=session)
+
+	record_session_activity(session, message)
+	transition = find_matching_transition(script, session.current_step, message)
+	if transition:
 		context = parse_context(session.context_json)
 		if transition.capture_as:
 			context[transition.capture_as] = message.message or ""
 		session.context_json = json.dumps(context)
 		execute_from_step(script, session, transition.destination_step, message)
-	else:
-		script = find_entry_script(message)
-		if not script:
-			mark_message_processed(message)
-			return None
+		return session
+
+	return apply_unmatched_policy(script, session, message)
+
+
+def start_matching_session(message, fallback=None):
+	script = find_entry_script(message)
+	if not script:
+		return fallback
+	return start_session(script, message)
+
+
+def start_session(script, message):
+	"""Create one active session, recovering the winner of a concurrent insert."""
+	savepoint = "whatsapp_conversation_session_create"
+	frappe.db.savepoint(savepoint)
+	try:
 		session = frappe.get_doc(
 			{
 				"doctype": "WhatsApp Conversation Session",
 				"conversation_script": script.name,
 				"status": "Active",
 				"whatsapp_account": message.whatsapp_account,
-				"phone_number": message.get("from"),
+				"phone_number": normalize_phone_number(message.get("from")),
 				"context_json": "{}",
 				"started_on": now_datetime(),
 				"last_activity_on": now_datetime(),
 			}
 		).insert(ignore_permissions=True)
-		execute_from_step(script, session, script.start_step, message)
+		frappe.db.release_savepoint(savepoint)
+	except (frappe.DuplicateEntryError, frappe.UniqueValidationError):
+		frappe.db.rollback(save_point=savepoint)
+		# A locking/current read sees the transaction that won the unique-key race,
+		# even when this transaction established an older repeatable-read snapshot.
+		session = get_active_session(
+			message.whatsapp_account,
+			message.get("from"),
+			current_read=True,
+		)
+		if not session:
+			raise
+		return process_active_session(message, session)
 
-	mark_message_processed(message, session.name)
-	return session.name
+	record_session_activity(session, message)
+	execute_from_step(script, session, script.start_step, message)
+	return session
 
 
-def get_active_session(whatsapp_account, phone_number):
-	rows = frappe.get_all(
-		"WhatsApp Conversation Session",
-		filters={
-			"whatsapp_account": whatsapp_account,
-			"phone_number": phone_number,
-			"status": "Active",
-		},
-		pluck="name",
-		order_by="last_activity_on desc, creation desc",
-		limit=1,
-	)
-	return frappe.get_doc("WhatsApp Conversation Session", rows[0], for_update=True) if rows else None
+def apply_unmatched_policy(script, session, message):
+	policy = script.unmatched_message_policy or "Retry"
+	if policy == "Restart":
+		end_session(session, "Closed", _("Restarted after an unmatched message"))
+		return start_session(script, message)
+	if policy == "Handoff":
+		end_session(session, "Handed Off", _("Unmatched message required handoff"))
+	elif policy == "Close":
+		end_session(session, "Closed", _("Closed after an unmatched message"))
+	else:
+		session.save(ignore_permissions=True)
+	return session
+
+
+def record_session_activity(session, message):
+	session.last_activity_on = now_datetime()
+	session.last_incoming_message = message.name
+	session.message_count = (session.message_count or 0) + 1
+
+
+def end_session(session, status, reason):
+	session.status = status
+	session.ended_reason = reason
+	session.save(ignore_permissions=True)
+
+
+def matches_keyword(text, configured_keywords):
+	value = (text or "").strip().casefold()
+	keywords = {
+		line.strip().casefold()
+		for line in (configured_keywords or "").splitlines()
+		if line.strip()
+	}
+	return bool(value and value in keywords)
+
+
+def get_session_expiry_reason(session, script, at_time=None):
+	now = get_datetime(at_time or now_datetime())
+	if script.idle_timeout_minutes and session.last_activity_on:
+		idle_seconds = (now - get_datetime(session.last_activity_on)).total_seconds()
+		if idle_seconds >= script.idle_timeout_minutes * 60:
+			return _("Idle timeout reached")
+	if script.maximum_lifetime_minutes and session.started_on:
+		lifetime_seconds = (now - get_datetime(session.started_on)).total_seconds()
+		if lifetime_seconds >= script.maximum_lifetime_minutes * 60:
+			return _("Maximum session lifetime reached")
+	if script.maximum_message_count and (session.message_count or 0) >= script.maximum_message_count:
+		return _("Maximum session message count reached")
+	return None
 
 
 def find_entry_script(message):
@@ -399,6 +503,27 @@ def enqueue_pending_outbox():
 			job_id=f"whatsapp-conversation-outbox-{outbox_name}",
 			deduplicate=True,
 		)
+
+
+def expire_stale_sessions():
+	"""Close active sessions whose configured idle or lifetime limit elapsed."""
+	scripts = {}
+	for session_name in frappe.get_all(
+		"WhatsApp Conversation Session",
+		filters={"status": "Active"},
+		pluck="name",
+		order_by="last_activity_on asc",
+	):
+		session = frappe.get_doc("WhatsApp Conversation Session", session_name, for_update=True)
+		if session.status != "Active":
+			continue
+		if session.conversation_script not in scripts:
+			scripts[session.conversation_script] = frappe.get_doc(
+				"WhatsApp Conversation Script", session.conversation_script
+			)
+		reason = get_session_expiry_reason(session, scripts[session.conversation_script])
+		if reason:
+			end_session(session, "Expired", reason)
 
 
 def render_text(template, context):

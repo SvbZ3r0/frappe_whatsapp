@@ -203,6 +203,10 @@ For `INIT`, `data_exchange`, and `BACK`, the encrypted `flow_token` must match a
 
 Each active customer journey is persisted as a **WhatsApp Conversation Session**, scoped by WhatsApp Account and phone number. Incoming messages advance the current step after the webhook transaction commits. Exact, contains, regex, content-type, any, and default transitions are supported, with optional context capture and `{{ variable }}` substitution in outgoing text.
 
+Each script also defines its session lifecycle: idle timeout, maximum lifetime, maximum inbound-message count, restart and cancel keywords, and an unmatched-message policy (`Retry`, `Restart`, `Handoff`, or `Close`). Safe defaults expire sessions after 24 idle hours, seven total days, or 50 inbound messages; setting a numeric limit to `0` disables that limit. A scheduler expires idle sessions even when no new message arrives.
+
+The database enforces one active session per WhatsApp Account and normalized phone number through a unique active-session key. This is the concurrency guarantee for simultaneous first messages; application validation is not relied upon for uniqueness. Migration keeps the most recently active legacy session and closes older normalized duplicates.
+
 Conversation sends use a durable **WhatsApp Conversation Outbox**. The outgoing `WhatsApp Message`, unique incoming-message/step execution key, session transition, and processed marker commit before a separate worker contacts Meta. Delivery is durably claimed as `Sending` first. If the worker cannot prove whether Meta accepted the request, the entry becomes `Unknown` and is never retried automatically; a System Manager may explicitly retry after accepting the duplicate-delivery risk.
 
 Custom actions use declarative hook keys rather than Server Scripts:

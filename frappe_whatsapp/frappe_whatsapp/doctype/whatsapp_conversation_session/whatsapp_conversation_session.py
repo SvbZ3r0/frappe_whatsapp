@@ -1,7 +1,9 @@
 # Copyright (c) 2025, Shridhar Patil and contributors
 # For license information, please see license.txt
 
+import hashlib
 import json
+import re
 
 import frappe
 from frappe import _
@@ -21,14 +23,23 @@ class WhatsAppConversationSession(Document):
 			frappe.throw(_("Conversation context is invalid JSON: {0}").format(str(exc)))
 		if not isinstance(context, dict):
 			frappe.throw(_("Conversation context must be a JSON object"))
-		if self.status == "Active":
-			filters = {
-				"whatsapp_account": self.whatsapp_account,
-				"phone_number": self.phone_number,
-				"status": "Active",
-			}
-			if self.name:
-				filters["name"] = ["!=", self.name]
-			if frappe.db.exists("WhatsApp Conversation Session", filters):
-				frappe.throw(_("This phone number already has an active conversation session on the account"))
+		self.phone_number = normalize_phone_number(self.phone_number)
+		if not self.phone_number:
+			frappe.throw(_("Phone Number must contain digits"))
+		self.active_session_key = (
+			make_active_session_key(self.whatsapp_account, self.phone_number)
+			if self.status == "Active"
+			else None
+		)
+
+
+def normalize_phone_number(phone_number):
+	return re.sub(r"\D", "", phone_number or "")
+
+
+def make_active_session_key(whatsapp_account, phone_number):
+	phone_number = normalize_phone_number(phone_number)
+	if not whatsapp_account or not phone_number:
+		return None
+	return hashlib.sha256(f"{whatsapp_account}\0{phone_number}".encode()).hexdigest()
 

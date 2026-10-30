@@ -19,6 +19,14 @@
   "entry_match_type",
   "entry_value",
   "start_step",
+  "lifecycle_section",
+  "idle_timeout_minutes",
+  "maximum_lifetime_minutes",
+  "maximum_message_count",
+  "lifecycle_column_break",
+  "restart_keywords",
+  "cancel_keywords",
+  "unmatched_message_policy",
   "steps_section",
   "steps",
   "transitions_section",
@@ -121,6 +129,60 @@
    "fieldname": "start_step",
    "fieldtype": "Data",
    "label": "Start Step",
+   "reqd": 1
+  },
+  {
+   "depends_on": "eval:doc.authoring_mode=='Structured'",
+   "fieldname": "lifecycle_section",
+   "fieldtype": "Section Break",
+   "label": "Session Lifecycle"
+  },
+  {
+   "default": "1440",
+   "description": "Expire an inactive session after this many minutes. Set 0 to disable idle expiry.",
+   "fieldname": "idle_timeout_minutes",
+   "fieldtype": "Int",
+   "label": "Idle Timeout (Minutes)"
+  },
+  {
+   "default": "10080",
+   "description": "Maximum elapsed time from session start. Set 0 for no lifetime limit.",
+   "fieldname": "maximum_lifetime_minutes",
+   "fieldtype": "Int",
+   "label": "Maximum Lifetime (Minutes)"
+  },
+  {
+   "default": "50",
+   "description": "Maximum inbound messages accepted by one session. Set 0 for no message-count limit.",
+   "fieldname": "maximum_message_count",
+   "fieldtype": "Int",
+   "label": "Maximum Message Count"
+  },
+  {
+   "fieldname": "lifecycle_column_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "restart\nstart over",
+   "description": "One case-insensitive exact-match keyword or phrase per line.",
+   "fieldname": "restart_keywords",
+   "fieldtype": "Small Text",
+   "label": "Restart Keywords"
+  },
+  {
+   "default": "cancel\nstop",
+   "description": "One case-insensitive exact-match keyword or phrase per line.",
+   "fieldname": "cancel_keywords",
+   "fieldtype": "Small Text",
+   "label": "Cancel Keywords"
+  },
+  {
+   "default": "Retry",
+   "description": "Action when no transition matches. Retry keeps the current step active.",
+   "fieldname": "unmatched_message_policy",
+   "fieldtype": "Select",
+   "label": "Unmatched Message Policy",
+   "options": "Retry\nRestart\nHandoff\nClose",
    "reqd": 1
   },
   {

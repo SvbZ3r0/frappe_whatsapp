@@ -122,12 +122,12 @@ class TestWhatsAppConversation(FrappeTestCase):
 			}
 		)
 
-	def make_incoming(self, text, message_id):
+	def make_incoming(self, text, message_id, phone_number="15555550101"):
 		return frappe.get_doc(
 			{
 				"doctype": "WhatsApp Message",
 				"type": "Incoming",
-				"from": "15555550101",
+				"from": phone_number,
 				"message": text,
 				"message_id": message_id,
 				"content_type": "text",
@@ -178,6 +178,243 @@ class TestWhatsAppConversation(FrappeTestCase):
 
 		self.assertEqual(first, second)
 		send.assert_called_once()
+
+	def test_restart_and_cancel_keywords_control_the_session(self):
+		from frappe_whatsapp import conversation
+
+		self.make_script("Conversation Command Test").insert(ignore_permissions=True)
+		with patch.object(conversation, "send_message", return_value=frappe._dict(name="sent")):
+			first_message = self.make_incoming("start", "conversation-command-start")
+			first_name = conversation.process_incoming_message(first_message.name)
+
+			restart = self.make_incoming("START OVER", "conversation-command-restart")
+			second_name = conversation.process_incoming_message(restart.name)
+
+			self.assertNotEqual(first_name, second_name)
+			first = frappe.get_doc("WhatsApp Conversation Session", first_name)
+			second = frappe.get_doc("WhatsApp Conversation Session", second_name)
+			self.assertEqual(first.status, "Closed")
+			self.assertIn("restarted", first.ended_reason.lower())
+			self.assertEqual(second.status, "Active")
+			self.assertEqual(second.message_count, 1)
+
+			cancel = self.make_incoming("cancel", "conversation-command-cancel")
+			self.assertEqual(conversation.process_incoming_message(cancel.name), second_name)
+
+		second.reload()
+		self.assertEqual(second.status, "Cancelled")
+		self.assertEqual(second.message_count, 2)
+
+	def test_unmatched_policy_can_handoff_instead_of_absorbing_messages(self):
+		from frappe_whatsapp import conversation
+
+		script = self.make_script("Conversation Unmatched Handoff Test")
+		script.unmatched_message_policy = "Handoff"
+		script.insert(ignore_permissions=True)
+		with patch.object(conversation, "send_message", return_value=frappe._dict(name="sent")):
+			start = self.make_incoming("start", "conversation-handoff-start")
+			session_name = conversation.process_incoming_message(start.name)
+			unmatched = self.make_incoming("not a valid choice", "conversation-handoff-unmatched")
+			conversation.process_incoming_message(unmatched.name)
+
+		session = frappe.get_doc("WhatsApp Conversation Session", session_name)
+		self.assertEqual(session.status, "Handed Off")
+		self.assertIn("unmatched", session.ended_reason.lower())
+		self.assertEqual(unmatched.reload().conversation_session, session_name)
+
+	def test_unmatched_retry_is_bounded_and_records_activity(self):
+		from frappe_whatsapp import conversation
+
+		script = self.make_script("Conversation Unmatched Retry Test")
+		script.insert(ignore_permissions=True)
+		with patch.object(conversation, "send_message", return_value=frappe._dict(name="sent")):
+			start = self.make_incoming("start", "conversation-retry-start")
+			session_name = conversation.process_incoming_message(start.name)
+			unmatched = self.make_incoming("not valid", "conversation-retry-unmatched")
+			conversation.process_incoming_message(unmatched.name)
+
+		session = frappe.get_doc("WhatsApp Conversation Session", session_name)
+		self.assertEqual(session.status, "Active")
+		self.assertEqual(session.message_count, 2)
+		self.assertEqual(session.last_incoming_message, unmatched.name)
+		self.assertGreater(script.maximum_lifetime_minutes, 0)
+		self.assertGreater(script.maximum_message_count, 0)
+
+	def test_unmatched_policy_can_restart_the_session(self):
+		from frappe_whatsapp import conversation
+
+		script = self.make_script("Conversation Unmatched Restart Test")
+		script.unmatched_message_policy = "Restart"
+		script.insert(ignore_permissions=True)
+		with patch.object(conversation, "send_message", return_value=frappe._dict(name="sent")):
+			start = self.make_incoming("start", "conversation-policy-restart-start")
+			first_name = conversation.process_incoming_message(start.name)
+			unmatched = self.make_incoming("try again", "conversation-policy-restart-unmatched")
+			second_name = conversation.process_incoming_message(unmatched.name)
+
+		self.assertNotEqual(first_name, second_name)
+		self.assertEqual(frappe.db.get_value("WhatsApp Conversation Session", first_name, "status"), "Closed")
+		self.assertEqual(frappe.db.get_value("WhatsApp Conversation Session", second_name, "status"), "Active")
+
+	def test_unmatched_policy_can_close_the_session(self):
+		from frappe_whatsapp import conversation
+
+		script = self.make_script("Conversation Unmatched Close Test")
+		script.unmatched_message_policy = "Close"
+		script.insert(ignore_permissions=True)
+		with patch.object(conversation, "send_message", return_value=frappe._dict(name="sent")):
+			start = self.make_incoming("start", "conversation-policy-close-start")
+			session_name = conversation.process_incoming_message(start.name)
+			unmatched = self.make_incoming("invalid", "conversation-policy-close-unmatched")
+			conversation.process_incoming_message(unmatched.name)
+
+		self.assertEqual(frappe.db.get_value("WhatsApp Conversation Session", session_name, "status"), "Closed")
+
+	def test_idle_session_expires_before_it_can_consume_another_answer(self):
+		from frappe.utils import add_to_date, now_datetime
+
+		from frappe_whatsapp import conversation
+
+		script = self.make_script("Conversation Idle Expiry Test")
+		script.idle_timeout_minutes = 1
+		script.insert(ignore_permissions=True)
+		with patch.object(conversation, "send_message", return_value=frappe._dict(name="sent")):
+			start = self.make_incoming("start", "conversation-expiry-start")
+			session_name = conversation.process_incoming_message(start.name)
+			frappe.db.set_value(
+				"WhatsApp Conversation Session",
+				session_name,
+				"last_activity_on",
+				add_to_date(now_datetime(), minutes=-2),
+				update_modified=False,
+			)
+			late_answer = self.make_incoming("continue", "conversation-expiry-answer")
+			conversation.process_incoming_message(late_answer.name)
+
+		session = frappe.get_doc("WhatsApp Conversation Session", session_name)
+		self.assertEqual(session.status, "Expired")
+		self.assertIn("idle", session.ended_reason.lower())
+		self.assertEqual(session.message_count, 1)
+
+	def test_active_session_key_is_unique_for_normalized_phone_number(self):
+		from frappe_whatsapp import conversation
+
+		script = self.make_script("Conversation Unique Session Test")
+		script.insert(ignore_permissions=True)
+		with patch.object(conversation, "send_message", return_value=frappe._dict(name="sent")):
+			start = self.make_incoming("start", "conversation-unique-start")
+			conversation.process_incoming_message(start.name)
+
+		duplicate = frappe.get_doc(
+			{
+				"doctype": "WhatsApp Conversation Session",
+				"conversation_script": script.name,
+				"status": "Active",
+				"whatsapp_account": "Conversation Test Account",
+				"phone_number": "+1 555 555 0101",
+				"context_json": "{}",
+			}
+		)
+		with self.assertRaises((frappe.DuplicateEntryError, frappe.UniqueValidationError)):
+			duplicate.insert(ignore_permissions=True)
+
+	def test_concurrent_session_loser_recovers_with_current_read(self):
+		from frappe_whatsapp import conversation
+
+		candidate = MagicMock()
+		candidate.insert.side_effect = frappe.UniqueValidationError
+		winner = frappe._dict(name="winning-session")
+		processed = frappe._dict(name="processed-winning-session")
+		message = frappe._dict(
+			name="incoming-race",
+			whatsapp_account="Conversation Test Account",
+			**{"from": "+1 555 555 0101"},
+		)
+		script = frappe._dict(name="Conversation Race Test", start_step="MENU")
+
+		with patch("frappe.get_doc", return_value=candidate), patch.object(
+			frappe.db, "savepoint"
+		), patch.object(frappe.db, "rollback") as rollback, patch.object(
+			conversation, "get_active_session", return_value=winner
+		) as get_active, patch.object(
+			conversation, "process_active_session", return_value=processed
+		) as process_active:
+			result = conversation.start_session(script, message)
+
+		rollback.assert_called_once_with(save_point="whatsapp_conversation_session_create")
+		get_active.assert_called_once_with(
+			"Conversation Test Account",
+			"+1 555 555 0101",
+			current_read=True,
+		)
+		process_active.assert_called_once_with(message, winner)
+		self.assertEqual(result, processed)
+
+	def test_message_limit_expires_session(self):
+		from frappe_whatsapp import conversation
+
+		script = self.make_script("Conversation Message Limit Test")
+		script.maximum_message_count = 1
+		script.insert(ignore_permissions=True)
+		with patch.object(conversation, "send_message", return_value=frappe._dict(name="sent")):
+			start = self.make_incoming("start", "conversation-limit-start")
+			session_name = conversation.process_incoming_message(start.name)
+			answer = self.make_incoming("continue", "conversation-limit-answer")
+			conversation.process_incoming_message(answer.name)
+
+		session = frappe.get_doc("WhatsApp Conversation Session", session_name)
+		self.assertEqual(session.status, "Expired")
+		self.assertIn("message count", session.ended_reason.lower())
+
+	def test_maximum_lifetime_expires_session(self):
+		from frappe.utils import add_to_date, now_datetime
+
+		from frappe_whatsapp import conversation
+
+		script = self.make_script("Conversation Lifetime Test")
+		script.idle_timeout_minutes = 0
+		script.maximum_lifetime_minutes = 1
+		script.insert(ignore_permissions=True)
+		with patch.object(conversation, "send_message", return_value=frappe._dict(name="sent")):
+			start = self.make_incoming("start", "conversation-lifetime-start")
+			session_name = conversation.process_incoming_message(start.name)
+			frappe.db.set_value(
+				"WhatsApp Conversation Session",
+				session_name,
+				"started_on",
+				add_to_date(now_datetime(), minutes=-2),
+				update_modified=False,
+			)
+			answer = self.make_incoming("continue", "conversation-lifetime-answer")
+			conversation.process_incoming_message(answer.name)
+
+		session = frappe.get_doc("WhatsApp Conversation Session", session_name)
+		self.assertEqual(session.status, "Expired")
+		self.assertIn("lifetime", session.ended_reason.lower())
+
+	def test_idle_expiry_sweeper_closes_abandoned_sessions(self):
+		from frappe.utils import add_to_date, now_datetime
+
+		from frappe_whatsapp import conversation
+
+		script = self.make_script("Conversation Expiry Sweep Test")
+		script.idle_timeout_minutes = 1
+		script.insert(ignore_permissions=True)
+		with patch.object(conversation, "send_message", return_value=frappe._dict(name="sent")):
+			start = self.make_incoming("start", "conversation-sweep-start")
+			session_name = conversation.process_incoming_message(start.name)
+		frappe.db.set_value(
+			"WhatsApp Conversation Session",
+			session_name,
+			"last_activity_on",
+			add_to_date(now_datetime(), minutes=-2),
+			update_modified=False,
+		)
+
+		conversation.expire_stale_sessions()
+
+		session = frappe.get_doc("WhatsApp Conversation Session", session_name)
+		self.assertEqual(session.status, "Expired")
 
 	def test_outgoing_action_is_durable_before_meta_delivery(self):
 		from frappe_whatsapp import conversation
@@ -286,18 +523,22 @@ class TestWhatsAppConversation(FrappeTestCase):
 		script.insert(ignore_permissions=True)
 
 		script.steps[0].message = "Changed in tables"
+		script.idle_timeout_minutes = 30
 		script.save(ignore_permissions=True)
 		self.assertEqual(
 			json.loads(script.script_json)["steps"][0]["message"],
 			"Changed in tables",
 		)
+		self.assertEqual(json.loads(script.script_json)["session"]["idle_timeout_minutes"], 30)
 
 		script.steps[0].message = "Conflicting table value"
 		value = json.loads(script.script_json)
 		value["steps"][0]["message"] = "JSON wins"
+		value["session"]["unmatched_message_policy"] = "Close"
 		script.script_json = json.dumps(value)
 		script.save(ignore_permissions=True)
 		self.assertEqual(script.steps[0].message, "JSON wins")
+		self.assertEqual(script.unmatched_message_policy, "Close")
 
 	def test_handler_dispatch_requires_one_allowlisted_method(self):
 		from frappe_whatsapp.conversation import dispatch_handler
