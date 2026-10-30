@@ -1,0 +1,283 @@
+# Copyright (c) 2025, Shridhar Patil and contributors
+# For license information, please see license.txt
+
+import json
+import re
+
+import frappe
+from frappe import _
+from frappe.model.document import Document
+
+
+STEP_FIELDS = (
+	"step_id",
+	"action_type",
+	"message",
+	"wait_for_reply",
+	"options",
+	"flow",
+	"flow_action",
+	"handler_key",
+)
+TRANSITION_FIELDS = (
+	"source_step",
+	"match_type",
+	"match_value",
+	"destination_step",
+	"priority",
+	"capture_as",
+)
+
+
+class WhatsAppConversationScript(Document):
+	def validate(self):
+		self.sync_authoring_representations()
+		self.validate_entry_trigger()
+		self.validate_steps_and_transitions()
+		self.validate_available_accounts()
+
+	def before_save(self):
+		self.script_json = json.dumps(self.get_script_json(), indent=2)
+
+	def get_script_json(self):
+		try:
+			value = json.loads(self.script_json or "{}")
+		except (TypeError, json.JSONDecodeError) as exc:
+			frappe.throw(_("Conversation Script JSON is invalid: {0}").format(str(exc)))
+		if not isinstance(value, dict):
+			frappe.throw(_("Conversation Script JSON must be an object"))
+		return value
+
+	def generate_script_json(self):
+		return {
+			"version": self.version or 1,
+			"entry": {
+				"match": self.entry_match_type,
+				"value": self.entry_value or "",
+			},
+			"start_step": self.start_step,
+			"steps": [
+				{
+					"id": step.step_id,
+					"action": step.action_type,
+					"message": step.message or "",
+					"wait_for_reply": bool(step.wait_for_reply),
+					"options": self.parse_json_value(step.options, _("Options"), []),
+					"flow": step.flow or "",
+					"flow_action": step.flow_action or "navigate",
+					"handler_key": step.handler_key or "",
+				}
+				for step in self.steps
+			],
+			"transitions": [
+				{
+					"from": transition.source_step,
+					"match": transition.match_type,
+					"value": transition.match_value or "",
+					"to": transition.destination_step,
+					"priority": transition.priority or 10,
+					"capture_as": transition.capture_as or "",
+				}
+				for transition in self.transitions
+			],
+		}
+
+	def import_script_json(self):
+		value = self.get_script_json()
+		entry = value.get("entry") or {}
+		steps = value.get("steps")
+		transitions = value.get("transitions")
+		if not isinstance(entry, dict) or not isinstance(steps, list) or not isinstance(transitions, list):
+			frappe.throw(_("Conversation Script JSON requires entry, steps, and transitions"))
+
+		self.version = value.get("version") or 1
+		self.entry_match_type = entry.get("match")
+		self.entry_value = entry.get("value") or ""
+		self.start_step = value.get("start_step")
+		self.set("steps", [])
+		self.set("transitions", [])
+		for step in steps:
+			if not isinstance(step, dict):
+				frappe.throw(_("Every conversation step must be an object"))
+			self.append(
+				"steps",
+				{
+					"step_id": step.get("id"),
+					"action_type": step.get("action"),
+					"message": step.get("message") or "",
+					"wait_for_reply": int(bool(step.get("wait_for_reply"))),
+					"options": json.dumps(step.get("options") or []),
+					"flow": step.get("flow") or None,
+					"flow_action": step.get("flow_action") or "navigate",
+					"handler_key": step.get("handler_key") or None,
+				},
+			)
+		for transition in transitions:
+			if not isinstance(transition, dict):
+				frappe.throw(_("Every conversation transition must be an object"))
+			self.append(
+				"transitions",
+				{
+					"source_step": transition.get("from"),
+					"match_type": transition.get("match"),
+					"match_value": transition.get("value") or "",
+					"destination_step": transition.get("to"),
+					"priority": transition.get("priority") or 10,
+					"capture_as": transition.get("capture_as") or "",
+				},
+			)
+
+		if self.generate_script_json() != value:
+			frappe.throw(
+				_("Conversation Script JSON cannot be represented losslessly by the structured editor")
+			)
+
+	def sync_authoring_representations(self):
+		previous = self.get_doc_before_save()
+		if not previous:
+			if self.script_json:
+				self.import_script_json()
+			else:
+				self.script_json = json.dumps(self.generate_script_json(), indent=2)
+			return
+
+		json_changed = not json_values_match(self.script_json, previous.script_json)
+		structured_changed = structured_state(self) != structured_state(previous)
+		if json_changed:
+			self.import_script_json()
+		elif structured_changed:
+			self.script_json = json.dumps(self.generate_script_json(), indent=2)
+
+	def validate_entry_trigger(self):
+		if self.entry_match_type not in ("Exact", "Contains", "Regex", "Content Type", "Any"):
+			frappe.throw(_("Select a valid entry trigger match type"))
+		if self.entry_match_type != "Any" and not self.entry_value:
+			frappe.throw(_("Entry trigger value is required"))
+		if self.entry_match_type == "Regex":
+			validate_regex(self.entry_value, _("Entry trigger"))
+
+	def validate_steps_and_transitions(self):
+		if not self.steps:
+			frappe.throw(_("Add at least one conversation step"))
+		step_ids = [step.step_id for step in self.steps]
+		if any(not step_id for step_id in step_ids) or len(step_ids) != len(set(step_ids)):
+			frappe.throw(_("Conversation step IDs must be present and unique"))
+		if self.start_step not in step_ids:
+			frappe.throw(_("Start Step must reference an existing step"))
+
+		transitions_by_source = {}
+		for transition in self.transitions:
+			if transition.source_step not in step_ids or transition.destination_step not in step_ids:
+				frappe.throw(_("Every transition must reference existing steps"))
+			if transition.match_type not in ("Exact", "Contains", "Regex", "Content Type", "Any", "Default"):
+				frappe.throw(_("Select a valid transition match type"))
+			if transition.match_type not in ("Any", "Default") and not transition.match_value:
+				frappe.throw(_("Transition match value is required"))
+			if transition.match_type == "Regex":
+				validate_regex(transition.match_value, _("Transition"))
+			transitions_by_source.setdefault(transition.source_step, []).append(transition)
+
+		for source, transitions in transitions_by_source.items():
+			if sum(1 for row in transitions if row.match_type == "Default") > 1:
+				frappe.throw(_("Step {0} has more than one default transition").format(source))
+
+		for step in self.steps:
+			if step.action_type not in (
+				"Send Text", "Send Options", "Launch Flow", "Run Handler", "Handoff", "End"
+			):
+				frappe.throw(_("Step {0} has an invalid action").format(step.step_id))
+			if step.action_type == "Send Options":
+				options = self.parse_json_value(step.options, _("Options"), [])
+				if not isinstance(options, list) or not 1 <= len(options) <= 10:
+					frappe.throw(_("Send Options requires between 1 and 10 options"))
+			if step.action_type == "Launch Flow" and not step.flow:
+				frappe.throw(_("Launch Flow step {0} requires a Flow").format(step.step_id))
+			if step.action_type == "Run Handler":
+				if not step.handler_key or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,139}", step.handler_key):
+					frappe.throw(_("Run Handler step {0} requires a valid handler key").format(step.step_id))
+			if (
+				step.action_type not in ("End", "Handoff", "Run Handler")
+				and step.step_id not in transitions_by_source
+			):
+				frappe.throw(_("Step {0} has no outgoing transition").format(step.step_id))
+
+		graph = {
+			source: {row.destination_step for row in rows}
+			for source, rows in transitions_by_source.items()
+		}
+		reachable = set()
+		pending = [self.start_step]
+		while pending:
+			step_id = pending.pop()
+			if step_id in reachable:
+				continue
+			reachable.add(step_id)
+			pending.extend(graph.get(step_id, set()))
+		unreachable = set(step_ids) - reachable
+		if unreachable:
+			frappe.throw(_("Unreachable conversation steps: {0}").format(", ".join(sorted(unreachable))))
+
+	def validate_available_accounts(self):
+		owner_business_id = frappe.db.get_value("WhatsApp Account", self.whatsapp_account, "business_id")
+		selected = [row.whatsapp_account for row in self.available_accounts]
+		if len(selected) != len(set(selected)):
+			frappe.throw(_("The same phone number cannot be selected more than once"))
+		if self.availability_mode == "Selected Phone Numbers" and not selected:
+			frappe.throw(_("Select at least one phone number for this script"))
+		for account_name in selected:
+			business_id = frappe.db.get_value("WhatsApp Account", account_name, "business_id")
+			if account_name != self.whatsapp_account and not (
+				owner_business_id and business_id == owner_business_id
+			):
+				frappe.throw(_("WhatsApp Account {0} does not belong to the script's WABA").format(account_name))
+
+	def is_available_on(self, whatsapp_account):
+		owner_business_id = frappe.db.get_value("WhatsApp Account", self.whatsapp_account, "business_id")
+		account_business_id = frappe.db.get_value("WhatsApp Account", whatsapp_account, "business_id")
+		if whatsapp_account != self.whatsapp_account and not (
+			owner_business_id and owner_business_id == account_business_id
+		):
+			return False
+		if self.availability_mode != "Selected Phone Numbers":
+			return True
+		return whatsapp_account in {row.whatsapp_account for row in self.available_accounts}
+
+	@staticmethod
+	def parse_json_value(value, label, default):
+		if not value:
+			return default
+		try:
+			return json.loads(value)
+		except (TypeError, json.JSONDecodeError) as exc:
+			frappe.throw(_("{0} is invalid JSON: {1}").format(label, str(exc)))
+
+
+def structured_state(doc):
+	return {
+		"version": doc.get("version"),
+		"entry_match_type": doc.get("entry_match_type"),
+		"entry_value": doc.get("entry_value"),
+		"start_step": doc.get("start_step"),
+		"steps": [
+			{fieldname: row.get(fieldname) for fieldname in STEP_FIELDS}
+			for row in (doc.get("steps") or [])
+		],
+		"transitions": [
+			{fieldname: row.get(fieldname) for fieldname in TRANSITION_FIELDS}
+			for row in (doc.get("transitions") or [])
+		],
+	}
+
+
+def json_values_match(left, right):
+	try:
+		return json.loads(left or "{}") == json.loads(right or "{}")
+	except (TypeError, json.JSONDecodeError):
+		return left == right
+
+
+def validate_regex(pattern, label):
+	try:
+		re.compile(pattern)
+	except re.error as exc:
+		frappe.throw(_("{0} regex is invalid: {1}").format(label, str(exc)))

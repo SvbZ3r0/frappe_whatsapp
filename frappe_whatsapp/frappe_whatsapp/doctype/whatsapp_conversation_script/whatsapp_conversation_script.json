@@ -1,0 +1,191 @@
+{
+ "actions": [],
+ "autoname": "field:script_name",
+ "creation": "2026-10-30 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "script_name",
+  "enabled",
+  "priority",
+  "column_break_1",
+  "whatsapp_account",
+  "authoring_mode",
+  "version",
+  "availability_section",
+  "availability_mode",
+  "available_accounts",
+  "entry_section",
+  "entry_match_type",
+  "entry_value",
+  "start_step",
+  "steps_section",
+  "steps",
+  "transitions_section",
+  "transitions",
+  "json_section",
+  "script_json"
+ ],
+ "fields": [
+  {
+   "fieldname": "script_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Script Name",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Enabled"
+  },
+  {
+   "default": "10",
+   "description": "Lower numbers win when multiple scripts match a new conversation.",
+   "fieldname": "priority",
+   "fieldtype": "Int",
+   "label": "Priority"
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "whatsapp_account",
+   "fieldtype": "Link",
+   "label": "Owning WhatsApp Account",
+   "options": "WhatsApp Account",
+   "reqd": 1
+  },
+  {
+   "default": "Structured",
+   "description": "Controls which editor is writable. Every save synchronizes the edited representation; JSON wins conflicts.",
+   "fieldname": "authoring_mode",
+   "fieldtype": "Select",
+   "label": "Authoring Mode",
+   "options": "Structured\nRaw JSON",
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "version",
+   "fieldtype": "Int",
+   "label": "Version",
+   "reqd": 1
+  },
+  {
+   "fieldname": "availability_section",
+   "fieldtype": "Section Break",
+   "label": "Phone Number Availability"
+  },
+  {
+   "default": "All Phone Numbers in WABA",
+   "fieldname": "availability_mode",
+   "fieldtype": "Select",
+   "label": "Available On",
+   "options": "All Phone Numbers in WABA\nSelected Phone Numbers",
+   "reqd": 1
+  },
+  {
+   "depends_on": "eval:doc.availability_mode=='Selected Phone Numbers'",
+   "fieldname": "available_accounts",
+   "fieldtype": "Table",
+   "label": "Selected Phone Numbers",
+   "options": "WhatsApp Flow Account"
+  },
+  {
+   "depends_on": "eval:doc.authoring_mode=='Structured'",
+   "fieldname": "entry_section",
+   "fieldtype": "Section Break",
+   "label": "Entry Trigger"
+  },
+  {
+   "depends_on": "eval:doc.authoring_mode=='Structured'",
+   "fieldname": "entry_match_type",
+   "fieldtype": "Select",
+   "label": "Match",
+   "options": "Exact\nContains\nRegex\nContent Type\nAny",
+   "reqd": 1
+  },
+  {
+   "depends_on": "eval:doc.authoring_mode=='Structured' && doc.entry_match_type!='Any'",
+   "fieldname": "entry_value",
+   "fieldtype": "Data",
+   "label": "Value"
+  },
+  {
+   "depends_on": "eval:doc.authoring_mode=='Structured'",
+   "fieldname": "start_step",
+   "fieldtype": "Data",
+   "label": "Start Step",
+   "reqd": 1
+  },
+  {
+   "depends_on": "eval:doc.authoring_mode=='Structured'",
+   "fieldname": "steps_section",
+   "fieldtype": "Section Break",
+   "label": "Steps"
+  },
+  {
+   "depends_on": "eval:doc.authoring_mode=='Structured'",
+   "fieldname": "steps",
+   "fieldtype": "Table",
+   "label": "Steps",
+   "options": "WhatsApp Conversation Step"
+  },
+  {
+   "depends_on": "eval:doc.authoring_mode=='Structured'",
+   "fieldname": "transitions_section",
+   "fieldtype": "Section Break",
+   "label": "Transitions"
+  },
+  {
+   "depends_on": "eval:doc.authoring_mode=='Structured'",
+   "fieldname": "transitions",
+   "fieldtype": "Table",
+   "label": "Transitions",
+   "options": "WhatsApp Conversation Transition"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "json_section",
+   "fieldtype": "Section Break",
+   "label": "Conversation Script JSON"
+  },
+  {
+   "description": "Synchronized with structured steps and transitions on every save. JSON wins conflicts.",
+   "fieldname": "script_json",
+   "fieldtype": "Code",
+   "label": "Script JSON",
+   "options": "JSON",
+   "read_only_depends_on": "eval:doc.authoring_mode!='Raw JSON'"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-10-30 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Frappe Whatsapp",
+ "name": "WhatsApp Conversation Script",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

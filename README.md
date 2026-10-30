@@ -197,6 +197,22 @@ Completed Flow answers are stored structurally in `WhatsApp Message.flow_respons
 
 For `INIT`, `data_exchange`, and `BACK`, the encrypted `flow_token` must match a persisted outgoing Flow message on the identified WhatsApp Account. The Flow-specific URL hint is used only for encrypted `ping` health checks.
 
+### Scripted conversations
+
+**WhatsApp Conversation Script** provides local, stateful message journeys without publishing an artifact to Meta. Define an entry trigger, ordered steps, and reply transitions using Structured tables or synchronized JSON. Supported steps can send text, buttons/lists, launch a WhatsApp Flow, invoke an allowlisted installed-app action, hand off, or finish.
+
+Each active customer journey is persisted as a **WhatsApp Conversation Session**, scoped by WhatsApp Account and phone number. Incoming messages advance the current step after the webhook transaction commits; message-level processing markers make retries idempotent. Exact, contains, regex, content-type, any, and default transitions are supported, with optional context capture and `{{ variable }}` substitution in outgoing text.
+
+Custom actions use declarative hook keys rather than Server Scripts:
+
+```python
+whatsapp_conversation_handlers = {
+    "update_record": "my_app.api.update_record",
+}
+```
+
+The handler receives script, session, account, phone number, current step, incoming-message identifier, and context. It may return context updates, a next step, or a terminal session status.
+
 ### Sync from Meta
 
 Keep your Frappe data synchronized with your Meta Business Account.
