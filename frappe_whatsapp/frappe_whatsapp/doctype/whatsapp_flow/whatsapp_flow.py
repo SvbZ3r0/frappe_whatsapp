@@ -31,6 +31,267 @@ def build_flow_endpoint_uri(endpoint_uri, flow_name):
     )
 
 
+STRUCTURED_FIELD_TYPES = {
+    "TextInput",
+    "TextArea",
+    "DatePicker",
+    "RadioButtonsGroup",
+    "CheckboxGroup",
+    "Dropdown",
+    "OptIn",
+    "EmbeddedLink",
+    "Image",
+    "TextHeading",
+    "TextSubheading",
+    "TextBody",
+    "TextCaption",
+}
+TEXT_COMPONENT_TYPES = {
+    "TextHeading",
+    "TextSubheading",
+    "TextBody",
+    "TextCaption",
+}
+OPTION_COMPONENT_TYPES = {"Dropdown", "RadioButtonsGroup", "CheckboxGroup"}
+
+
+def json_values_match(left, right):
+    """Compare JSON strings semantically, falling back to direct equality."""
+    try:
+        return json.loads(left or "{}") == json.loads(right or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return left == right
+
+
+def parse_flow_json_to_structured(flow_json):
+    """Parse the losslessly representable subset of Meta Flow JSON."""
+    screens = flow_json.get("screens")
+    if not isinstance(screens, list) or not screens:
+        frappe.throw(_("Flow JSON must contain a non-empty screens array"))
+
+    parsed = {"screens": [], "routes": [], "fields": []}
+    display_field_index = 0
+    for screen in screens:
+        if not isinstance(screen, dict):
+            frappe.throw(_("Each Flow screen must be a JSON object"))
+        screen_id = screen.get("id")
+        layout = screen.get("layout")
+        if not screen_id or not isinstance(layout, dict):
+            frappe.throw(_("Each Flow screen requires an id and layout"))
+        if layout.get("type") != "SingleColumnLayout":
+            frappe.throw(
+                _("Structured mode supports only SingleColumnLayout screens")
+            )
+        children = layout.get("children")
+        if not isinstance(children, list):
+            frappe.throw(_("Screen {0} layout children must be an array").format(screen_id))
+
+        terminal = bool(screen.get("terminal"))
+        parsed["screens"].append(
+            {
+                "screen_id": screen_id,
+                "screen_title": screen.get("title") or screen_id,
+                "terminal": int(terminal),
+                "refresh_on_back": int(bool(screen.get("refresh_on_back"))),
+                "layout_type": "SingleColumnLayout",
+            }
+        )
+
+        route_component_seen = False
+        for component in children:
+            if not isinstance(component, dict):
+                frappe.throw(
+                    _("Every component on screen {0} must be a JSON object").format(
+                        screen_id
+                    )
+                )
+            component_type = component.get("type")
+            if component_type == "If":
+                if terminal or route_component_seen:
+                    frappe.throw(
+                        _("Screen {0} has an unsupported conditional layout").format(
+                            screen_id
+                        )
+                    )
+                parsed["routes"].extend(
+                    parse_conditional_routes(component, screen_id)
+                )
+                route_component_seen = True
+                continue
+            if component_type == "Footer":
+                action_name = (component.get("on-click-action") or {}).get("name")
+                if action_name == "navigate":
+                    if terminal or route_component_seen:
+                        frappe.throw(
+                            _("Screen {0} has multiple or invalid route footers").format(
+                                screen_id
+                            )
+                        )
+                    parsed["routes"].append(
+                        parse_route_footer(component, screen_id, is_default=True)
+                    )
+                    route_component_seen = True
+                    continue
+                if action_name != "complete" or not terminal:
+                    frappe.throw(
+                        _("Screen {0} uses an unsupported Footer action").format(
+                            screen_id
+                        )
+                    )
+                if component.get("label") == "Complete":
+                    # This is the structured generator's implicit terminal footer.
+                    continue
+                display_field_index += 1
+                parsed["fields"].append(
+                    {
+                        "screen": screen_id,
+                        "field_name": f"footer_{display_field_index}",
+                        "field_type": "Footer",
+                        "label": component.get("label") or "Submit",
+                        "enabled": 1,
+                    }
+                )
+                continue
+
+            if component_type not in STRUCTURED_FIELD_TYPES:
+                frappe.throw(
+                    _("Component type {0} is not supported by Structured mode").format(
+                        component_type or "(missing)"
+                    )
+                )
+            field, display_field_index = parse_field_component(
+                component, screen_id, display_field_index
+            )
+            parsed["fields"].append(field)
+
+    return parsed
+
+
+def parse_field_component(component, screen_id, display_field_index):
+    """Convert one supported Meta component into a field table row."""
+    component_type = component["type"]
+    field = {
+        "screen": screen_id,
+        "field_type": component_type,
+        "enabled": 1,
+    }
+
+    if component_type in TEXT_COMPONENT_TYPES:
+        display_field_index += 1
+        field.update(
+            {
+                "field_name": f"display_{display_field_index}",
+                "label": component.get("text") or "",
+            }
+        )
+        return field, display_field_index
+
+    if component_type == "Image":
+        display_field_index += 1
+        field.update(
+            {
+                "field_name": f"image_{display_field_index}",
+                "label": component.get("alt-text"),
+                "init_value": component.get("src") or "",
+            }
+        )
+        return field, display_field_index
+
+    if component_type == "EmbeddedLink":
+        action = component.get("on-click-action") or {}
+        next_screen = action.get("next") or {}
+        if action.get("name") != "navigate" or next_screen.get("type") != "screen":
+            frappe.throw(_("EmbeddedLink uses an unsupported action"))
+        display_field_index += 1
+        field.update(
+            {
+                "field_name": f"link_{display_field_index}",
+                "label": component.get("text") or "Link",
+                "init_value": next_screen.get("name") or "",
+            }
+        )
+        return field, display_field_index
+
+    if not component.get("name"):
+        frappe.throw(
+            _("Component {0} on screen {1} requires a name").format(
+                component_type, screen_id
+            )
+        )
+    field.update(
+        {
+            "field_name": component["name"],
+            "label": component.get("label") or component["name"],
+            "required": int(bool(component.get("required"))),
+            "helper_text": component.get("helper-text"),
+            "init_value": component.get("init-value"),
+            "min_chars": component.get("min-chars"),
+            "max_chars": component.get("max-chars"),
+            "error_message": component.get("error-message"),
+        }
+    )
+    if component_type in OPTION_COMPONENT_TYPES and component.get("data-source"):
+        field["options"] = json.dumps(component["data-source"])
+    return field, display_field_index
+
+
+def parse_conditional_routes(component, screen_id):
+    """Parse the nested If/Footer shape emitted by structured branches."""
+    routes = []
+    branch = component
+    while isinstance(branch, dict) and branch.get("type") == "If":
+        then_children = branch.get("then")
+        else_children = branch.get("else")
+        if (
+            not branch.get("condition")
+            or not isinstance(then_children, list)
+            or len(then_children) != 1
+            or not isinstance(else_children, list)
+            or len(else_children) != 1
+        ):
+            frappe.throw(
+                _("Screen {0} has a conditional layout that Structured mode cannot represent").format(
+                    screen_id
+                )
+            )
+        route = parse_route_footer(then_children[0], screen_id, is_default=False)
+        route["condition"] = branch["condition"]
+        routes.append(route)
+        branch = else_children[0]
+
+    routes.append(parse_route_footer(branch, screen_id, is_default=True))
+    return routes
+
+
+def parse_route_footer(component, screen_id, is_default):
+    """Convert a navigation Footer into a route table row."""
+    if not isinstance(component, dict) or component.get("type") != "Footer":
+        frappe.throw(
+            _("Screen {0} route branches must end in Footer components").format(
+                screen_id
+            )
+        )
+    action = component.get("on-click-action") or {}
+    next_screen = action.get("next") or {}
+    if (
+        action.get("name") != "navigate"
+        or next_screen.get("type") != "screen"
+        or not next_screen.get("name")
+    ):
+        frappe.throw(
+            _("Screen {0} route Footer must navigate to another screen").format(
+                screen_id
+            )
+        )
+    return {
+        "source_screen": screen_id,
+        "condition": None,
+        "is_default": int(is_default),
+        "destination_screen": next_screen["name"],
+        "button_label": component.get("label") or "Continue",
+    }
+
+
 class WhatsAppFlow(Document):
     def before_save(self):
         """Generate structured JSON or normalize user-authored raw JSON."""
@@ -41,6 +302,7 @@ class WhatsAppFlow(Document):
 
     def validate(self):
         """Validate flow configuration."""
+        self.convert_authoring_mode_if_changed()
         if self.authoring_mode == "Raw JSON":
             raw_flow_json = self.get_raw_flow_json()
             self.flow_json_version = raw_flow_json.get(
@@ -104,6 +366,44 @@ class WhatsAppFlow(Document):
         if not isinstance(flow_json, dict) or not flow_json.get("screens"):
             frappe.throw(_("Flow JSON must contain at least one screen"))
         return flow_json
+
+    def convert_authoring_mode_if_changed(self):
+        """Convert representations on mode changes without silently losing data."""
+        previous = self.get_doc_before_save()
+        if not previous or previous.authoring_mode == self.authoring_mode:
+            return
+
+        if self.authoring_mode == "Raw JSON":
+            # If the editor was deliberately changed at the same time as the mode,
+            # it is already authoritative. Otherwise include current table edits.
+            if json_values_match(self.flow_json, previous.flow_json):
+                self.flow_json = json.dumps(self.generate_flow_json(), indent=2)
+            return
+
+        if self.authoring_mode == "Structured":
+            self.import_raw_json_to_structured()
+
+    def import_raw_json_to_structured(self):
+        """Populate structured tables when Raw JSON is losslessly representable."""
+        raw_flow_json = self.get_raw_flow_json()
+        parsed = parse_flow_json_to_structured(raw_flow_json)
+        self.set("screens", parsed["screens"])
+        self.set("routes", parsed["routes"])
+        self.set("fields", parsed["fields"])
+        self.flow_json_version = raw_flow_json.get(
+            "version", self.flow_json_version or "7.3"
+        )
+        self.data_api_version = raw_flow_json.get(
+            "data_api_version", self.data_api_version or "3.0"
+        )
+
+        regenerated = self.generate_flow_json()
+        if regenerated != raw_flow_json:
+            frappe.throw(
+                _(
+                    "This Raw JSON contains constructs that the structured screen, route, and field tables cannot represent losslessly. Keep this Flow in Raw JSON mode."
+                )
+            )
 
     def validate_screens(self):
         """Ensure at least one screen exists and has valid configuration."""

@@ -219,7 +219,12 @@ frappe.ui.form.on("WhatsApp Flow", {
     authoring_mode(frm) {
         if (frm.doc.authoring_mode === "Raw JSON") {
             frappe.show_alert({
-                message: __("Raw JSON is authoritative and will be uploaded without structured regeneration."),
+                message: __("Saving will convert the current structured tables into editable Raw JSON."),
+                indicator: "blue"
+            });
+        } else {
+            frappe.show_alert({
+                message: __("Saving will rebuild the structured tables from Raw JSON. Unsupported constructs will block the conversion instead of being discarded."),
                 indicator: "blue"
             });
         }

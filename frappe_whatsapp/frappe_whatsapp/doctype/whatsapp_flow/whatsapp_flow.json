@@ -80,7 +80,7 @@
   },
   {
    "default": "Structured",
-   "description": "Structured uses the screen, route and field tables. Raw JSON preserves and uploads the JSON editor verbatim.",
+   "description": "Switching modes converts between the structured tables and JSON editor on save. Conversion back to Structured is allowed only when it is lossless.",
    "fieldname": "authoring_mode",
    "fieldtype": "Select",
    "label": "Authoring Mode",

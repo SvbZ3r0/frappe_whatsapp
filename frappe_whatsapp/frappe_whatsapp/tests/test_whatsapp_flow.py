@@ -434,6 +434,90 @@ class TestWhatsAppFlow(FrappeTestCase):
         self.assertEqual(flow.flow_json_version, "7.2")
         self.assertEqual(flow.data_api_version, "3.0")
 
+    def test_authoring_modes_round_trip_branched_flow(self):
+        """Supported branched JSON converts back into structured tables."""
+        flow = frappe.get_doc({
+            "doctype": "WhatsApp Flow",
+            "flow_name": "Test Mode Round Trip",
+            "whatsapp_account": "Test Account",
+            "category": "OTHER",
+            "screens": [
+                {"screen_id": "CHOICE", "screen_title": "Choose", "terminal": 0},
+                {"screen_id": "BUSINESS", "screen_title": "Business", "terminal": 1},
+                {"screen_id": "PERSONAL", "screen_title": "Personal", "terminal": 1},
+            ],
+            "fields": [{
+                "screen": "CHOICE",
+                "field_name": "selection",
+                "field_type": "RadioButtonsGroup",
+                "label": "Selection",
+                "enabled": 1,
+                "options": json.dumps([
+                    {"id": "business", "title": "Business"},
+                    {"id": "personal", "title": "Personal"},
+                ]),
+            }],
+            "routes": [
+                {
+                    "source_screen": "CHOICE",
+                    "condition": "${form.selection} == 'option_a'",
+                    "destination_screen": "BUSINESS",
+                    "button_label": "Continue",
+                },
+                {
+                    "source_screen": "CHOICE",
+                    "is_default": 1,
+                    "destination_screen": "PERSONAL",
+                    "button_label": "Continue",
+                },
+            ],
+        })
+        flow.insert(ignore_permissions=True)
+        flow.screens[0].screen_title = "Choose before Raw switch"
+        structured_json = flow.generate_flow_json()
+
+        flow.authoring_mode = "Raw JSON"
+        flow.save(ignore_permissions=True)
+        self.assertEqual(json.loads(flow.flow_json), structured_json)
+
+        edited_json = json.loads(flow.flow_json)
+        edited_json["screens"][0]["title"] = "Choose an option"
+        edited_json["screens"][0]["layout"]["children"][0]["label"] = "Contact preference"
+        flow.flow_json = json.dumps(edited_json)
+        flow.authoring_mode = "Structured"
+        flow.save(ignore_permissions=True)
+
+        self.assertEqual(flow.screens[0].screen_title, "Choose an option")
+        self.assertEqual(flow.fields[0].label, "Contact preference")
+        self.assertEqual(len(flow.routes), 2)
+        self.assertEqual(flow.routes[0].destination_screen, "BUSINESS")
+        self.assertEqual(flow.routes[1].destination_screen, "PERSONAL")
+        self.assertEqual(json.loads(flow.flow_json), edited_json)
+
+    def test_raw_to_structured_rejects_unsupported_components(self):
+        """Advanced Raw JSON is never flattened during a mode switch."""
+        from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_flow.whatsapp_flow import (
+            parse_flow_json_to_structured,
+        )
+
+        raw_json = {
+            "version": "7.3",
+            "screens": [{
+                "id": "PHOTO",
+                "title": "Photo",
+                "terminal": True,
+                "success": True,
+                "data": {},
+                "layout": {
+                    "type": "SingleColumnLayout",
+                    "children": [{"type": "PhotoPicker", "name": "photo"}],
+                },
+            }],
+        }
+
+        with self.assertRaises(frappe.ValidationError):
+            parse_flow_json_to_structured(raw_json)
+
     def test_phone_number_availability(self):
         """Selected availability allows only configured numbers in the WABA."""
         account_name = "Test Account Secondary"
