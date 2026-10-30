@@ -162,7 +162,7 @@ Build interactive forms using WhatsApp's native Flow Builder. Flows provide a ri
 
 **Branches and availability:**
 - Add rows under **Screen Routes** to route a screen conditionally. Use Meta expressions such as `${form.selection} == 'option_a'` and add one default route per branching screen.
-- Switching to **Raw JSON** converts the current tables into editable JSON. Switching back rebuilds screens, Form-contained fields, Footer actions, client-side branches, server-driven routes, and per-screen data schemas when conversion is lossless; unsupported Meta constructs remain protected in Raw mode instead of being discarded.
+- **Authoring Mode** only selects the writable editor. Every save detects whether JSON or the structured tables changed and synchronizes the other representation; JSON wins conflicts. Screens, Form-contained fields, Footer actions, client-side branches, server-driven routes, and per-screen data schemas round-trip losslessly, while unsupported Meta constructs are rejected rather than discarded.
 - Set **Available On** to all phone numbers in the Flow's WABA or select an explicit set of WhatsApp Accounts/phone numbers. The same restriction is enforced when sending.
 - On a Flow message, use **Flow Action**, **Flow Screen**, and **Initial Flow Data** for dynamic launches. **Flow Action Payload** accepts the complete Meta payload when additional keys are needed.
 

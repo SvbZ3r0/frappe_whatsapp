@@ -53,6 +53,42 @@ TEXT_COMPONENT_TYPES = {
     "TextCaption",
 }
 OPTION_COMPONENT_TYPES = {"Dropdown", "RadioButtonsGroup", "CheckboxGroup"}
+STRUCTURED_STATE_FIELDS = {
+    "screens": (
+        "screen_id",
+        "screen_title",
+        "terminal",
+        "refresh_on_back",
+        "layout_type",
+        "data_json",
+    ),
+    "routes": (
+        "source_screen",
+        "server_driven",
+        "condition",
+        "is_default",
+        "destination_screen",
+        "button_label",
+    ),
+    "fields": (
+        "screen",
+        "field_name",
+        "field_type",
+        "label",
+        "form_name",
+        "required",
+        "enabled",
+        "init_value",
+        "input_type",
+        "min_chars",
+        "max_chars",
+        "helper_text",
+        "error_message",
+        "options",
+        "action_name",
+        "action_payload",
+    ),
+}
 
 
 def json_values_match(left, right):
@@ -61,6 +97,21 @@ def json_values_match(left, right):
         return json.loads(left or "{}") == json.loads(right or "{}")
     except (TypeError, json.JSONDecodeError):
         return left == right
+
+
+def get_structured_state(doc):
+    """Return the ordered structured values that affect generated Flow JSON."""
+    state = {
+        "flow_json_version": doc.get("flow_json_version"),
+        "data_api_version": doc.get("data_api_version"),
+        "handler_key": doc.get("handler_key"),
+    }
+    for table_field, fieldnames in STRUCTURED_STATE_FIELDS.items():
+        state[table_field] = [
+            {fieldname: row.get(fieldname) for fieldname in fieldnames}
+            for row in (doc.get(table_field) or [])
+        ]
+    return state
 
 
 def parse_flow_json_to_structured(flow_json):
@@ -370,26 +421,14 @@ def parse_route_footer(component, screen_id, is_default):
 
 class WhatsAppFlow(Document):
     def before_save(self):
-        """Generate structured JSON or normalize user-authored raw JSON."""
-        if self.authoring_mode == "Raw JSON":
-            self.flow_json = json.dumps(self.get_raw_flow_json(), indent=2)
-        else:
-            self.flow_json = json.dumps(self.generate_flow_json(), indent=2)
+        """Store a consistently formatted copy after validation reconciles both views."""
+        self.flow_json = json.dumps(self.get_raw_flow_json(), indent=2)
 
     def validate(self):
         """Validate flow configuration."""
-        self.convert_authoring_mode_if_changed()
-        if self.authoring_mode == "Raw JSON":
-            raw_flow_json = self.get_raw_flow_json()
-            self.flow_json_version = raw_flow_json.get(
-                "version", self.flow_json_version or "7.3"
-            )
-            self.data_api_version = raw_flow_json.get(
-                "data_api_version", self.data_api_version or "3.0"
-            )
-        else:
-            self.validate_screens()
-            self.validate_routes()
+        self.sync_authoring_representations()
+        self.validate_screens()
+        self.validate_routes()
         self.validate_available_accounts()
         self.validate_handler_key()
         self.configure_endpoint_uri()
@@ -443,21 +482,34 @@ class WhatsAppFlow(Document):
             frappe.throw(_("Flow JSON must contain at least one screen"))
         return flow_json
 
-    def convert_authoring_mode_if_changed(self):
-        """Convert representations on mode changes without silently losing data."""
+    def sync_authoring_representations(self):
+        """Synchronize JSON and tables based on what changed, with JSON priority."""
         previous = self.get_doc_before_save()
-        if not previous or previous.authoring_mode == self.authoring_mode:
-            return
-
-        if self.authoring_mode == "Raw JSON":
-            # If the editor was deliberately changed at the same time as the mode,
-            # it is already authoritative. Otherwise include current table edits.
-            if json_values_match(self.flow_json, previous.flow_json):
+        if not previous:
+            if self.flow_json:
+                self.import_raw_json_to_structured()
+            else:
                 self.flow_json = json.dumps(self.generate_flow_json(), indent=2)
             return
 
-        if self.authoring_mode == "Structured":
+        json_changed = not json_values_match(self.flow_json, previous.flow_json)
+        structured_changed = get_structured_state(self) != get_structured_state(previous)
+
+        if json_changed:
             self.import_raw_json_to_structured()
+            return
+        if structured_changed:
+            self.flow_json = json.dumps(self.generate_flow_json(), indent=2)
+            return
+
+        try:
+            representations_match = self.generate_flow_json() == self.get_raw_flow_json()
+        except (AttributeError, TypeError, frappe.ValidationError):
+            representations_match = False
+        if not representations_match and previous.authoring_mode == "Raw JSON":
+            self.import_raw_json_to_structured()
+        elif not representations_match:
+            self.flow_json = json.dumps(self.generate_flow_json(), indent=2)
 
     def import_raw_json_to_structured(self):
         """Populate structured tables when Raw JSON is losslessly representable."""

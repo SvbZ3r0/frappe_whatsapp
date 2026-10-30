@@ -405,10 +405,10 @@ class TestWhatsAppFlow(FrappeTestCase):
         """Advanced Meta JSON must not be flattened by before_save."""
         raw_json = {
             "version": "7.2",
-            "data_api_version": "3.0",
             "screens": [{
                 "id": "RAW_SCREEN",
                 "title": "Raw",
+                "data": {},
                 "terminal": True,
                 "success": True,
                 "layout": {
@@ -433,6 +433,38 @@ class TestWhatsAppFlow(FrappeTestCase):
         self.assertEqual(json.loads(flow.flow_json), raw_json)
         self.assertEqual(flow.flow_json_version, "7.2")
         self.assertEqual(flow.data_api_version, "3.0")
+
+    def test_save_syncs_the_edited_representation_with_json_priority(self):
+        """Mode selects the editor; edit detection selects synchronization direction."""
+        flow = self.create_test_flow(
+            "Test Continuous Authoring Sync",
+            [{"screen_id": "DONE", "screen_title": "Initial", "terminal": 1}],
+            [],
+        )
+
+        flow.authoring_mode = "Raw JSON"
+        flow.save(ignore_permissions=True)
+
+        raw_json = json.loads(flow.flow_json)
+        raw_json["screens"][0]["title"] = "Changed in JSON"
+        flow.flow_json = json.dumps(raw_json)
+        flow.save(ignore_permissions=True)
+        self.assertEqual(flow.screens[0].screen_title, "Changed in JSON")
+
+        flow.screens[0].screen_title = "Changed in tables"
+        flow.save(ignore_permissions=True)
+        self.assertEqual(
+            json.loads(flow.flow_json)["screens"][0]["title"],
+            "Changed in tables",
+        )
+
+        flow.screens[0].screen_title = "Conflicting table edit"
+        raw_json = json.loads(flow.flow_json)
+        raw_json["screens"][0]["title"] = "JSON wins"
+        flow.flow_json = json.dumps(raw_json)
+        flow.save(ignore_permissions=True)
+        self.assertEqual(flow.screens[0].screen_title, "JSON wins")
+        self.assertEqual(json.loads(flow.flow_json)["screens"][0]["title"], "JSON wins")
 
     def test_authoring_modes_round_trip_branched_flow(self):
         """Supported branched JSON converts back into structured tables."""

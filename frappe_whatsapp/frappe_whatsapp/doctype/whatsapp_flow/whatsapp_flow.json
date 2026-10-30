@@ -80,7 +80,7 @@
   },
   {
    "default": "Structured",
-   "description": "Switching modes converts between the structured tables and JSON editor on save. Conversion back to Structured is allowed only when it is lossless.",
+   "description": "Controls which editor is writable. Every save synchronizes the edited representation to the other; JSON has priority if both changed.",
    "fieldname": "authoring_mode",
    "fieldtype": "Select",
    "label": "Authoring Mode",
@@ -200,7 +200,7 @@
    "label": "Generated Flow JSON"
   },
   {
-   "description": "Generated from the structured configuration, or editable directly in Raw JSON mode",
+   "description": "Synchronized with the structured tables on every save. JSON has priority when both representations changed.",
    "fieldname": "flow_json",
    "fieldtype": "Code",
    "label": "Flow JSON",
