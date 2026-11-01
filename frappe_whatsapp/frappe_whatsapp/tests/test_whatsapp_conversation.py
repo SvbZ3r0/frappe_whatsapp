@@ -2,10 +2,12 @@
 # For license information, please see license.txt
 
 import json
+from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
+from frappe.utils import now_datetime
 
 
 class TestWhatsAppConversation(FrappeTestCase):
@@ -33,6 +35,18 @@ class TestWhatsAppConversation(FrappeTestCase):
 		super().tearDown()
 
 	def cleanup_conversation_data(self):
+		flow_sessions = frappe.get_all(
+			"WhatsApp Flow Session",
+			filters={"whatsapp_account": "Conversation Test Account"},
+			pluck="name",
+		)
+		if flow_sessions:
+			frappe.db.delete(
+				"WhatsApp Flow Exchange", {"flow_session": ["in", flow_sessions]}
+			)
+			frappe.db.delete(
+				"WhatsApp Flow Session", {"name": ["in", flow_sessions]}
+			)
 		sessions = frappe.get_all(
 			"WhatsApp Conversation Session",
 			filters={"whatsapp_account": "Conversation Test Account"},
@@ -53,6 +67,10 @@ class TestWhatsAppConversation(FrappeTestCase):
 		)
 		frappe.db.delete(
 			"WhatsApp Conversation Session",
+			{"whatsapp_account": "Conversation Test Account"},
+		)
+		frappe.db.delete(
+			"WhatsApp Messaging Window",
 			{"whatsapp_account": "Conversation Test Account"},
 		)
 		for script_name in frappe.get_all(
@@ -615,6 +633,33 @@ class TestWhatsAppConversation(FrappeTestCase):
 		self.assertEqual(outbox.attempts, 1)
 		self.assertEqual(outgoing.status, "Success")
 		self.assertEqual(outgoing.message_id, "wamid.conversation-delivered")
+
+	def test_stale_outbox_is_blocked_and_session_is_handed_off(self):
+		from frappe_whatsapp import conversation
+
+		self.make_script("Conversation Window Block Test").insert(ignore_permissions=True)
+		message = self.make_incoming("start", "conversation-window-block")
+		with patch("frappe.enqueue"):
+			conversation.process_incoming_message(message.name)
+		outbox = frappe.get_last_doc("WhatsApp Conversation Outbox")
+		frappe.db.set_value(
+			"WhatsApp Messaging Window",
+			{"whatsapp_account": "Conversation Test Account", "phone_number": message.get("from")},
+			"service_window_expires_on",
+			now_datetime() - timedelta(seconds=1),
+		)
+
+		with patch.object(frappe.db, "commit"), patch.object(frappe.db, "rollback"), patch(
+			"frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_message.whatsapp_message.make_post_request"
+		) as post:
+			self.assertEqual(conversation.deliver_outbox(outbox.name), "Blocked")
+
+		outbox.reload()
+		session = frappe.get_doc("WhatsApp Conversation Session", outbox.conversation_session)
+		self.assertEqual(outbox.status, "Blocked")
+		self.assertEqual(session.status, "Handed Off")
+		self.assertIn("customer-service window", session.ended_reason)
+		post.assert_not_called()
 
 	def test_flow_delivery_persists_generated_token_for_endpoint_correlation(self):
 		from frappe_whatsapp import conversation

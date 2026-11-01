@@ -9,6 +9,11 @@ from frappe.utils import now_datetime
 
 
 class WhatsAppAccount(Document):
+	def validate(self):
+		retention_days = self.flow_exchange_retention_days or 7
+		if retention_days < 1 or retention_days > 90:
+			frappe.throw(_("Flow Exchange Response Retention must be between 1 and 90 days"))
+
 	def on_update(self):
 		"""Check there is only one default of each type."""
 		self.there_must_be_only_one_default()

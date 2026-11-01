@@ -31,6 +31,17 @@ DELIVERY_MUTATED_MESSAGE_FIELDS = (
 
 def schedule_incoming_message(doc, event=None):
 	"""Queue an incoming message after its webhook transaction commits."""
+	from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_flow_session.whatsapp_flow_session import (
+		ensure_flow_session_for_launch,
+	)
+	from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_messaging_window.whatsapp_messaging_window import (
+		record_incoming_message,
+	)
+
+	if doc.type == "Incoming":
+		record_incoming_message(doc)
+	elif doc.type == "Outgoing" and doc.content_type == "flow":
+		ensure_flow_session_for_launch(doc)
 	if doc.type != "Incoming" or doc.conversation_processed:
 		return
 	if frappe.flags.in_test or frappe.flags.in_migrate or frappe.flags.in_install:
@@ -494,6 +505,12 @@ def deliver_outbox(outbox_name):
 			},
 			update_modified=False,
 		)
+		if outgoing.content_type == "flow":
+			from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_flow_session.whatsapp_flow_session import (
+				ensure_flow_session_for_launch,
+			)
+
+			ensure_flow_session_for_launch(outgoing)
 		frappe.db.set_value(
 			"WhatsApp Conversation Outbox",
 			outbox.name,
@@ -506,6 +523,36 @@ def deliver_outbox(outbox_name):
 		)
 		return "Sent"
 	except Exception as exc:
+		from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_messaging_window.whatsapp_messaging_window import (
+			MessagingWindowClosedError,
+		)
+
+		if isinstance(exc, MessagingWindowClosedError):
+			frappe.db.rollback()
+			session = frappe.get_doc(
+				"WhatsApp Conversation Session", outbox.conversation_session, for_update=True
+			)
+			if session.status == "Active":
+				end_session(
+					session,
+					"Handed Off",
+					_("WhatsApp customer-service window closed before delivery"),
+				)
+			frappe.db.set_value(
+				"WhatsApp Conversation Outbox",
+				outbox.name,
+				{"status": "Blocked", "last_error": "MessagingWindowClosedError"},
+				update_modified=False,
+			)
+			frappe.db.set_value(
+				"WhatsApp Message",
+				outbox.outgoing_message,
+				"status",
+				"Blocked",
+				update_modified=False,
+			)
+			frappe.db.commit()  # nosemgrep: frappe-manual-commit -- preserve deterministic policy block
+			return "Blocked"
 		# Delivery outcome may be ambiguous after any network exception. Never
 		# auto-replay it; an operator can explicitly accept that risk and retry.
 		frappe.db.rollback()

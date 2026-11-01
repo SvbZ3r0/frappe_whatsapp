@@ -7,6 +7,9 @@ from frappe.model.document import Document
 from frappe.integrations.utils import make_post_request
 
 from frappe_whatsapp.utils import get_whatsapp_account, format_number
+from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_messaging_window.whatsapp_messaging_window import (
+    assert_free_form_message_allowed,
+)
 
 class WhatsAppMessage(Document):
     def validate(self):
@@ -113,6 +116,10 @@ class WhatsAppMessage(Document):
             return
 
         if self.message_type != "Template":
+            # Meta permits free-form, interactive and Flow messages only during
+            # the 24 hours following the customer's latest inbound message.
+            # Check at actual delivery time so queued messages cannot go stale.
+            assert_free_form_message_allowed(self.whatsapp_account, self.to)
             if self.attach and not self.attach.startswith("http"):
                 link = frappe.utils.get_url() + "/" + self.attach
             else:

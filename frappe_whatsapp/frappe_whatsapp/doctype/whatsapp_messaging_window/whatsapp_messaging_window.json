@@ -1,0 +1,96 @@
+{
+ "actions": [],
+ "autoname": "hash",
+ "creation": "2026-11-01 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "whatsapp_account",
+  "phone_number",
+  "window_key",
+  "column_break_1",
+  "last_incoming_message",
+  "last_customer_message_on",
+  "service_window_expires_on",
+  "status"
+ ],
+ "fields": [
+  {
+   "fieldname": "whatsapp_account",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "WhatsApp Account",
+   "options": "WhatsApp Account",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "phone_number",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Phone Number",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "window_key",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Window Key",
+   "read_only": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "last_incoming_message",
+   "fieldtype": "Link",
+   "label": "Last Incoming Message",
+   "options": "WhatsApp Message",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_customer_message_on",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Last Customer Message On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "service_window_expires_on",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Service Window Expires On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Current Status",
+   "options": "Open\nClosed",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "modified": "2026-11-01 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Frappe Whatsapp",
+ "name": "WhatsApp Messaging Window",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager"
+  }
+ ],
+ "sort_field": "last_customer_message_on",
+ "sort_order": "DESC",
+ "states": []
+}

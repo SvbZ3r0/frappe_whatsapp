@@ -10,3 +10,5 @@ frappe_whatsapp.patches.migrate_to_multi_account
 frappe_whatsapp.patches.set_default_in_whatsapp_settings
 frappe_whatsapp.patches.split_flow_versions
 frappe_whatsapp.patches.initialize_conversation_session_keys
+frappe_whatsapp.patches.initialize_messaging_windows
+frappe_whatsapp.patches.initialize_flow_sessions

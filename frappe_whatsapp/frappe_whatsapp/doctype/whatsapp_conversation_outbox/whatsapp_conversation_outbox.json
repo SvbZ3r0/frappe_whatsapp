@@ -32,7 +32,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Status",
-   "options": "Pending\nSending\nSent\nUnknown",
+   "options": "Pending\nSending\nSent\nBlocked\nUnknown",
    "read_only": 1,
    "search_index": 1
   },

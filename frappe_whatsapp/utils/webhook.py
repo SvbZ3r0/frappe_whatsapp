@@ -3,6 +3,7 @@ import frappe
 import json
 import requests
 import time
+from datetime import datetime, timezone
 from frappe import _
 from werkzeug.wrappers import Response
 import frappe.utils
@@ -82,6 +83,7 @@ def post():
 				frappe.get_doc({
 					"doctype": "WhatsApp Message",
 					"type": "Incoming",
+					"message_timestamp": get_message_timestamp(message),
 					"from": message['from'],
 					"message": message['text']['body'],
 					"message_id": message['id'],
@@ -95,6 +97,7 @@ def post():
 				frappe.get_doc({
 					"doctype": "WhatsApp Message",
 					"type": "Incoming",
+					"message_timestamp": get_message_timestamp(message),
 					"from": message['from'],
 					"message": message['reaction']['emoji'],
 					"reply_to_message_id": message['reaction']['message_id'],
@@ -112,6 +115,7 @@ def post():
 					frappe.get_doc({
 						"doctype": "WhatsApp Message",
 						"type": "Incoming",
+						"message_timestamp": get_message_timestamp(message),
 						"from": message['from'],
 						"message": interactive_data['button_reply']['id'],
 						"message_id": message['id'],
@@ -126,6 +130,7 @@ def post():
 					frappe.get_doc({
 						"doctype": "WhatsApp Message",
 						"type": "Incoming",
+						"message_timestamp": get_message_timestamp(message),
 						"from": message['from'],
 						"message": interactive_data['list_reply']['id'],
 						"message_id": message['id'],
@@ -156,6 +161,7 @@ def post():
 					msg_doc = frappe.get_doc({
 						"doctype": "WhatsApp Message",
 						"type": "Incoming",
+						"message_timestamp": get_message_timestamp(message),
 						"from": message['from'],
 						"message": _("Flow completed"),
 						"message_id": message['id'],
@@ -168,6 +174,14 @@ def post():
 						"profile_name": sender_profile_name,
 						"whatsapp_account": whatsapp_account.name
 					}).insert(ignore_permissions=True)
+
+					from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_flow_session.whatsapp_flow_session import (
+						complete_flow_session,
+					)
+
+					complete_flow_session(
+						whatsapp_account.name, flow_token, msg_doc.name
+					)
 
 					# Notify clients by identifier only. Authorized clients must fetch the
 					# document through normal Frappe permissions to read flow_response.
@@ -183,6 +197,7 @@ def post():
 				frappe.get_doc({
 					"doctype": "WhatsApp Message",
 					"type": "Incoming",
+					"message_timestamp": get_message_timestamp(message),
 					"from": message['from'],
 					"message": _("New Order Received via WhatsApp"),
 					"message_id": message['id'],
@@ -217,6 +232,7 @@ def post():
 						message_doc = frappe.get_doc({
 							"doctype": "WhatsApp Message",
 							"type": "Incoming",
+							"message_timestamp": get_message_timestamp(message),
 							"from": message['from'],
 							"message_id": message['id'],
 							"reply_to_message_id": reply_to_message_id,
@@ -245,6 +261,7 @@ def post():
 				frappe.get_doc({
 					"doctype": "WhatsApp Message",
 					"type": "Incoming",
+					"message_timestamp": get_message_timestamp(message),
 					"from": message['from'],
 					"message": message['button']['text'],
 					"message_id": message['id'],
@@ -258,6 +275,7 @@ def post():
 				frappe.get_doc({
 					"doctype": "WhatsApp Message",
 					"type": "Incoming",
+					"message_timestamp": get_message_timestamp(message),
 					"from": message['from'],
 					"message_id": message['id'],
 					"message": message[message_type].get(message_type),
@@ -274,6 +292,18 @@ def post():
 			changes = data["entry"]["changes"][0]
 		update_status(changes)
 	return
+
+
+def get_message_timestamp(message):
+	"""Convert Meta's UTC epoch timestamp to the site's naive system datetime."""
+	value = message.get("timestamp")
+	if value in (None, ""):
+		return None
+	try:
+		utc_time = datetime.fromtimestamp(int(value), tz=timezone.utc).replace(tzinfo=None)
+	except (TypeError, ValueError, OverflowError):
+		return None
+	return frappe.utils.convert_utc_to_system_timezone(utc_time)
 
 
 def get_outgoing_flow_message(flow_token, whatsapp_account):

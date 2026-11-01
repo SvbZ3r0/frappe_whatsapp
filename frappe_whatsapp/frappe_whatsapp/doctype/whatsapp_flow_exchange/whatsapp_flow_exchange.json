@@ -1,0 +1,33 @@
+{
+ "actions": [],
+ "autoname": "hash",
+ "creation": "2026-11-01 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": ["flow_session","status","action","screen","column_break_1","request_fingerprint","handler_key","response_screen","started_on","completed_on","response_expires_on","response_json","last_error"],
+ "fields": [
+  {"fieldname":"flow_session","fieldtype":"Link","in_list_view":1,"label":"Flow Session","options":"WhatsApp Flow Session","read_only":1,"reqd":1},
+  {"fieldname":"status","fieldtype":"Select","in_list_view":1,"label":"Status","options":"Processing\nCompleted\nFailed","read_only":1,"reqd":1,"search_index":1},
+  {"fieldname":"action","fieldtype":"Select","in_list_view":1,"label":"Action","options":"INIT\ndata_exchange\nBACK","read_only":1,"reqd":1},
+  {"fieldname":"screen","fieldtype":"Data","in_list_view":1,"label":"Request Screen","read_only":1},
+  {"fieldname":"column_break_1","fieldtype":"Column Break"},
+  {"fieldname":"request_fingerprint","fieldtype":"Data","hidden":1,"label":"Request Fingerprint","read_only":1,"unique":1},
+  {"fieldname":"handler_key","fieldtype":"Data","label":"Handler Key","read_only":1},
+  {"fieldname":"response_screen","fieldtype":"Data","label":"Response Screen","read_only":1},
+  {"fieldname":"started_on","fieldtype":"Datetime","label":"Started On","read_only":1},
+  {"fieldname":"completed_on","fieldtype":"Datetime","label":"Completed On","read_only":1},
+  {"fieldname":"response_expires_on","fieldtype":"Datetime","label":"Idempotency Response Expires On","read_only":1},
+  {"description":"Access is restricted by DocType permissions. Request payloads are never copied here, and this cached response is cleared after the configured retention period.","fieldname":"response_json","fieldtype":"Code","label":"Idempotency Response","options":"JSON","read_only":1},
+  {"fieldname":"last_error","fieldtype":"Data","label":"Error Type","read_only":1}
+ ],
+ "index_web_pages_for_search": 1,
+ "modified": "2026-11-01 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Frappe Whatsapp",
+ "name": "WhatsApp Flow Exchange",
+ "owner": "Administrator",
+ "permissions": [{"email":1,"export":1,"print":1,"read":1,"report":1,"role":"System Manager"}],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

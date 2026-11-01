@@ -37,6 +37,12 @@ class TestWhatsAppMessage(IntegrationTestCase):
             frappe.db.commit()  # nosemgrep: frappe-manual-commit -- test fixture must be visible to later queries
 
     def setUp(self):
+        # Message payload tests are independent of Meta's customer-service
+        # window. Dedicated messaging-window tests cover that policy guard.
+        self.window_guard = patch(
+            "frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_message.whatsapp_message.assert_free_form_message_allowed"
+        )
+        self.window_guard.start()
         # Set password within each test's transaction scope
         from frappe.utils.password import set_encrypted_password
         set_encrypted_password("WhatsApp Account", "Test WA Msg Account", "test_token_123", "token")
@@ -48,11 +54,27 @@ class TestWhatsAppMessage(IntegrationTestCase):
         })
 
     def tearDown(self):
+        self.window_guard.stop()
+        flow_sessions = frappe.get_all(
+            "WhatsApp Flow Session",
+            filters={"whatsapp_account": "Test WA Msg Account"},
+            pluck="name",
+        )
+        if flow_sessions:
+            frappe.db.delete(
+                "WhatsApp Flow Exchange", {"flow_session": ["in", flow_sessions]}
+            )
+            frappe.db.delete(
+                "WhatsApp Flow Session", {"name": ["in", flow_sessions]}
+            )
         frappe.db.delete(
             "WhatsApp Message", {"whatsapp_account": "Test WA Msg Account"}
         )
         frappe.db.delete(
             "WhatsApp Profiles", {"whatsapp_account": "Test WA Msg Account"}
+        )
+        frappe.db.delete(
+            "WhatsApp Messaging Window", {"whatsapp_account": "Test WA Msg Account"}
         )
         if frappe.db.exists("WhatsApp Flow", "Test WA Message Flow"):
             frappe.delete_doc("WhatsApp Flow", "Test WA Message Flow", force=True)

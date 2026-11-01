@@ -38,7 +38,8 @@
   "flow_previous_private_key",
   "flow_previous_private_key_passphrase",
   "app_secret",
-  "require_flow_request_signature"
+  "require_flow_request_signature",
+  "flow_exchange_retention_days"
  ],
  "fields": [
   {
@@ -234,6 +235,13 @@
    "fieldname": "require_flow_request_signature",
    "fieldtype": "Check",
    "label": "Require Flow Request Signature"
+  },
+  {
+   "default": "7",
+   "description": "Days to retain encrypted-endpoint handler responses for exact retry idempotency. Decrypted request payloads are never copied into exchange records.",
+   "fieldname": "flow_exchange_retention_days",
+   "fieldtype": "Int",
+   "label": "Flow Exchange Response Retention (Days)"
   }
  ],
  "grid_page_length": 50,

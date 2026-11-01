@@ -73,6 +73,11 @@ class TestBulkWhatsAppMessage(IntegrationTestCase):
         for name in frappe.get_all("Bulk WhatsApp Message", filters={"title": ["like", "Test Bulk%"]}, pluck="name"):
             frappe.db.set_value("Bulk WhatsApp Message", name, "docstatus", 2)
             frappe.delete_doc("Bulk WhatsApp Message", name, force=True)
+        frappe.db.delete("WhatsApp Message", {"message_id": ["like", "wamid.bulk_%"]})
+        frappe.db.delete("WhatsApp Message", {"message_id": ["like", "wamid.failed_bulk_%"]})
+        frappe.db.delete(
+            "WhatsApp Messaging Window", {"whatsapp_account": "Test WA Bulk Account"}
+        )
         frappe.db.commit()  # nosemgrep: frappe-manual-commit -- test fixture must be visible to later queries
 
     def _make_bulk_message(self, **kwargs):
@@ -203,6 +208,16 @@ class TestBulkWhatsAppMessage(IntegrationTestCase):
         }
 
         doc = self._make_bulk_message(title="Test Bulk Resend Single")
+        # A manual retry is legal only while the customer-service window is open.
+        frappe.get_doc({
+            "doctype": "WhatsApp Message",
+            "type": "Incoming",
+            "from": "15555550108",
+            "message": "Please retry",
+            "message_id": "wamid.bulk_retry_customer",
+            "content_type": "text",
+            "whatsapp_account": "Test WA Bulk Account",
+        }).insert(ignore_permissions=True)
         failed_msg = frappe.get_doc({
             "doctype": "WhatsApp Message",
             "type": "Outgoing",
