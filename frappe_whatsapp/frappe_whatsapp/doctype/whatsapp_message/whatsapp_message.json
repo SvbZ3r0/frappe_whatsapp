@@ -23,9 +23,6 @@
   "message_id",
   "message_timestamp",
   "conversation_id",
-  "conversation_session",
-  "conversation_processed",
-  "defer_send",
   "content_type",
   "attach",
   "buttons",
@@ -108,14 +105,6 @@
    "read_only": 1
   },
   {
-   "default": "0",
-   "fieldname": "defer_send",
-   "fieldtype": "Check",
-   "hidden": 1,
-   "label": "Defer Send",
-   "read_only": 1
-  },
-  {
    "fieldname": "template_header_parameters",
    "fieldtype": "Small Text",
    "label": "Template Header Parameters",
@@ -157,20 +146,6 @@
    "fieldname": "conversation_id",
    "fieldtype": "Data",
    "label": "Conversation ID",
-   "read_only": 1
-  },
-  {
-   "fieldname": "conversation_session",
-   "fieldtype": "Link",
-   "label": "Conversation Session",
-   "options": "WhatsApp Conversation Session",
-   "read_only": 1
-  },
-  {
-   "default": "0",
-   "fieldname": "conversation_processed",
-   "fieldtype": "Check",
-   "label": "Conversation Processed",
    "read_only": 1
   },
   {

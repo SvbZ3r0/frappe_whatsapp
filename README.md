@@ -197,30 +197,6 @@ Completed Flow answers are stored structurally in `WhatsApp Message.flow_respons
 
 For `INIT`, `data_exchange`, and `BACK`, the encrypted `flow_token` must match a persisted outgoing Flow message on the identified WhatsApp Account. The Flow-specific URL hint is used only for encrypted `ping` health checks.
 
-### Scripted conversations
-
-**WhatsApp Conversation Script** provides local, stateful message journeys without publishing an artifact to Meta. Define `All` or `Any` entry conditions, ordered steps, and reply transitions using Structured tables or synchronized JSON. Entry conditions can match message text, content type, and the sender's country-code prefix. Supported steps can send text, buttons/lists, launch a WhatsApp Flow, invoke an allowlisted installed-app action, hand off, or finish.
-
-Each active customer journey is persisted as a **WhatsApp Conversation Session**, scoped by WhatsApp Account and phone number. Incoming messages advance the current step after the webhook transaction commits. Exact, contains, regex, content-type, any, and default transitions are supported, with optional context capture and `{{ variable }}` substitution in outgoing text.
-
-Script validation enforces WhatsApp text, interactive-body, option ID/title/description, and Flow CTA limits before activation. User-defined regex matching has a hard execution timeout, and installed-app handler responses are schema-checked before they can update context, select a step, or terminate a session.
-
-Each script also defines its session lifecycle: idle timeout, maximum lifetime, maximum inbound-message count, restart and cancel keywords, and an unmatched-message policy (`Retry`, `Restart`, `Handoff`, or `Close`). Safe defaults expire sessions after 24 idle hours, seven total days, or 50 inbound messages; setting a numeric limit to `0` disables that limit. A scheduler expires idle sessions even when no new message arrives.
-
-The database enforces one active session per WhatsApp Account and normalized phone number through a unique active-session key. This is the concurrency guarantee for simultaneous first messages; application validation is not relied upon for uniqueness. Migration keeps the most recently active legacy session and closes older normalized duplicates.
-
-Conversation sends use a durable **WhatsApp Conversation Outbox**. The outgoing `WhatsApp Message`, unique incoming-message/step execution key, session transition, and processed marker commit before a separate worker contacts Meta. Delivery is durably claimed as `Sending` first. If the worker cannot prove whether Meta accepted the request, the entry becomes `Unknown` and is never retried automatically; a System Manager may explicitly retry after accepting the duplicate-delivery risk.
-
-Custom actions use declarative hook keys rather than Server Scripts:
-
-```python
-whatsapp_conversation_handlers = {
-    "update_record": "my_app.api.update_record",
-}
-```
-
-The handler receives script, session, account, phone number, current step, incoming-message identifier, and context. It may return context updates, a next step, or a terminal session status.
-
 ### Sync from Meta
 
 Keep your Frappe data synchronized with your Meta Business Account.

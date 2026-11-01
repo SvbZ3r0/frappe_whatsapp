@@ -3,12 +3,10 @@
 
 import frappe
 
-from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_conversation_session.whatsapp_conversation_session import (
-	normalize_phone_number,
-)
 from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_messaging_window.whatsapp_messaging_window import (
 	record_incoming_message,
 )
+from frappe_whatsapp.utils.phone import normalize_phone_number
 
 
 def execute():

@@ -10,8 +10,6 @@ app_license = "MIT"
 # Installed apps can map declarative Flow handler keys to trusted Python methods.
 # Each method receives a normalized context dict and returns {"screen": ..., "data": {...}}.
 # whatsapp_flow_handlers = {"my_flow": "my_app.api.handle_whatsapp_flow"}
-# Installed apps may also map declarative conversation action keys.
-# whatsapp_conversation_handlers = {"update_record": "my_app.api.update_record"}
 
 # Includes in <head>
 # ------------------
@@ -124,8 +122,6 @@ scheduler_events = {
     "all": [
         "frappe_whatsapp.utils.trigger_whatsapp_notifications_all",
         "frappe_whatsapp.utils.bulk_messaging.process_scheduled_bulk_messages",
-        "frappe_whatsapp.conversation.enqueue_pending_outbox",
-        "frappe_whatsapp.conversation.expire_stale_sessions",
         "frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_flow_exchange.whatsapp_flow_exchange.purge_expired_exchange_responses",
         "frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_messaging_window.whatsapp_messaging_window.close_expired_messaging_windows"
     ],
@@ -227,8 +223,5 @@ doc_events = {
         "after_delete": "frappe_whatsapp.utils.run_server_script_for_doc_event",
         "before_update_after_submit": "frappe_whatsapp.utils.run_server_script_for_doc_event",
         "on_update_after_submit": "frappe_whatsapp.utils.run_server_script_for_doc_event"
-    },
-    "WhatsApp Message": {
-        "after_insert": "frappe_whatsapp.conversation.schedule_incoming_message"
-    },
+    }
 }

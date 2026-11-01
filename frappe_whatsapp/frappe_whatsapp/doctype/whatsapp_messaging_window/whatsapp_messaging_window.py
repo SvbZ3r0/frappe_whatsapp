@@ -8,9 +8,7 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import add_to_date, get_datetime, now_datetime
 
-from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_conversation_session.whatsapp_conversation_session import (
-	normalize_phone_number,
-)
+from frappe_whatsapp.utils.phone import normalize_phone_number
 
 
 SERVICE_WINDOW_HOURS = 24

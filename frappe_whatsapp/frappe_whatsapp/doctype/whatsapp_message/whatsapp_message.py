@@ -9,6 +9,7 @@ from frappe.integrations.utils import make_post_request
 from frappe_whatsapp.utils import get_whatsapp_account, format_number
 from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_messaging_window.whatsapp_messaging_window import (
     assert_free_form_message_allowed,
+    record_incoming_message,
 )
 
 class WhatsAppMessage(Document):
@@ -19,6 +20,17 @@ class WhatsAppMessage(Document):
 
     def on_update(self):
         self.update_profile_name()
+
+    def after_insert(self):
+        """Update transport state without coupling it to an automation engine."""
+        if self.type == "Incoming":
+            record_incoming_message(self)
+        elif self.type == "Outgoing" and self.content_type == "flow":
+            from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_flow_session.whatsapp_flow_session import (
+                ensure_flow_session_for_launch,
+            )
+
+            ensure_flow_session_for_launch(self)
 
     def update_profile_name(self):
         number = self.get("from")
@@ -98,10 +110,7 @@ class WhatsAppMessage(Document):
         # since message_type is read_only and cannot be set from the UI.
         if self.template:
             self.message_type = "Template"
-        if self.type == "Outgoing" and self.defer_send:
-            self.status = "Queued"
-        else:
-            self.send_outgoing()
+        self.send_outgoing()
         self.create_whatsapp_profile()
 
     def send_outgoing(self):

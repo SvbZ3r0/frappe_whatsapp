@@ -7,9 +7,7 @@ import frappe
 from frappe.model.document import Document
 from frappe.utils import now_datetime
 
-from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_conversation_session.whatsapp_conversation_session import (
-	normalize_phone_number,
-)
+from frappe_whatsapp.utils.phone import normalize_phone_number
 
 
 class WhatsAppFlowSession(Document):
