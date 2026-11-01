@@ -293,6 +293,28 @@ class TestWhatsAppMessage(IntegrationTestCase):
         self.assertEqual(sent_data["image"]["caption"], "Image caption")
 
     @patch("frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_message.whatsapp_message.make_post_request")
+    def test_outgoing_document_message_includes_filename(self, mock_post):
+        mock_post.return_value = {
+            "messages": [{"id": "wamid.test_document_1"}],
+        }
+        doc = frappe.get_doc({
+            "doctype": "WhatsApp Message",
+            "type": "Outgoing",
+            "to": "919900112258",
+            "message": "Quotation",
+            "message_type": "Manual",
+            "content_type": "document",
+            "attach": "https://example.com/quotation.pdf",
+            "file_name": "QTN-0001.pdf",
+            "whatsapp_account": "Test WA Msg Account",
+        })
+        doc.insert(ignore_permissions=True)
+
+        call_args = mock_post.call_args
+        sent_data = json.loads(call_args.kwargs.get("data", call_args[1].get("data", "")))
+        self.assertEqual(sent_data["document"]["filename"], "QTN-0001.pdf")
+
+    @patch("frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_message.whatsapp_message.make_post_request")
     def test_outgoing_reaction_message(self, mock_post):
         """Test sending a reaction message."""
         mock_post.return_value = {

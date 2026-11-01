@@ -146,6 +146,8 @@ class WhatsAppMessage(Document):
                     "link": link,
                     "caption": self.message,
                 }
+                if self.content_type == "document" and self.file_name:
+                    data["document"]["filename"] = self.file_name
             elif self.content_type == "reaction":
                 data["reaction"] = {
                     "message_id": self.reply_to_message_id,

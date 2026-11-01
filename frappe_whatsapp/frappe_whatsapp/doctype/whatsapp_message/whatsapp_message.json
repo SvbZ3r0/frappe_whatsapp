@@ -25,6 +25,7 @@
   "conversation_id",
   "content_type",
   "attach",
+  "file_name",
   "buttons",
   "body_param",
   "whatsapp_account",
@@ -162,6 +163,13 @@
    "fieldname": "attach",
    "fieldtype": "Attach",
    "label": "Attach"
+  },
+  {
+   "depends_on": "eval:doc.content_type == 'document'",
+   "description": "Optional filename shown to the recipient for document messages.",
+   "fieldname": "file_name",
+   "fieldtype": "Data",
+   "label": "File Name"
   },
   {
    "default": "{}",
