@@ -229,11 +229,39 @@ def find_entry_script(message):
 		order_by="priority asc, creation asc",
 	):
 		script = frappe.get_doc("WhatsApp Conversation Script", name)
-		if script.is_available_on(message.whatsapp_account) and message_matches(
-			message, script.entry_match_type, script.entry_value
+		if script.is_available_on(message.whatsapp_account) and entry_conditions_match(
+			message, script.entry_conditions, script.entry_condition_logic
 		):
 			return script
 	return None
+
+
+def entry_conditions_match(message, conditions, logic="All"):
+	if not conditions:
+		return False
+	results = [entry_condition_matches(message, condition) for condition in conditions]
+	return any(results) if logic == "Any" else all(results)
+
+
+def entry_condition_matches(message, condition):
+	source = condition.get("source")
+	operator = condition.get("operator")
+	value = condition.get("value") or ""
+	if operator == "Any":
+		return True
+	if source == "Message Text":
+		match_type = {"Equals": "Exact", "Contains": "Contains", "Regex": "Regex"}.get(operator)
+		return bool(match_type and message_matches(message, match_type, value))
+	if source == "Content Type":
+		return operator == "Equals" and (message.content_type or "").casefold() == value.casefold()
+	if source == "Country Code":
+		country_code = normalize_phone_number(value)
+		return bool(
+			operator == "Equals"
+			and country_code
+			and normalize_phone_number(message.get("from")).startswith(country_code)
+		)
+	return False
 
 
 def find_matching_transition(script, source_step, message):

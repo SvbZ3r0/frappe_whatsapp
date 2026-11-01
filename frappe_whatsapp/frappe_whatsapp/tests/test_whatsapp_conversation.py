@@ -102,8 +102,14 @@ class TestWhatsAppConversation(FrappeTestCase):
 				"authoring_mode": "Structured",
 				"version": 1,
 				"availability_mode": "All Phone Numbers in WABA",
-				"entry_match_type": "Exact",
-				"entry_value": "start",
+				"entry_condition_logic": "All",
+				"entry_conditions": [
+					{
+						"source": "Message Text",
+						"operator": "Equals",
+						"value": "start",
+					}
+				],
 				"start_step": "MENU",
 				"steps": [
 					{
@@ -230,6 +236,39 @@ class TestWhatsAppConversation(FrappeTestCase):
 
 		self.assertEqual(first, second)
 		send.assert_called_once()
+
+	def test_entry_conditions_support_country_code_and_all_logic(self):
+		from frappe_whatsapp import conversation
+
+		script = self.make_script("Conversation Country Code Test")
+		script.append(
+			"entry_conditions",
+			{"source": "Country Code", "operator": "Equals", "value": "+91"},
+		)
+		script.insert(ignore_permissions=True)
+
+		with patch.object(conversation, "send_message", return_value=frappe._dict(name="sent")):
+			nonmatching = self.make_incoming(
+				"start", "conversation-country-nonmatch", phone_number="15555550111"
+			)
+			self.assertIsNone(conversation.process_incoming_message(nonmatching.name))
+			matching = self.make_incoming(
+				"start", "conversation-country-match", phone_number="919876543210"
+			)
+			self.assertIsNotNone(conversation.process_incoming_message(matching.name))
+
+	def test_entry_conditions_support_any_logic(self):
+		from frappe_whatsapp.conversation import entry_conditions_match
+
+		message = frappe._dict(
+			message="hello", content_type="text", **{"from": "15555550112"}
+		)
+		conditions = [
+			frappe._dict(source="Message Text", operator="Equals", value="start"),
+			frappe._dict(source="Country Code", operator="Equals", value="+1"),
+		]
+		self.assertTrue(entry_conditions_match(message, conditions, "Any"))
+		self.assertFalse(entry_conditions_match(message, conditions, "All"))
 
 	def test_launches_flow_with_configured_action(self):
 		from frappe_whatsapp import conversation
@@ -758,10 +797,17 @@ class TestWhatsAppConversation(FrappeTestCase):
 		value = json.loads(script.script_json)
 		value["steps"][0]["message"] = "JSON wins"
 		value["session"]["unmatched_message_policy"] = "Close"
+		value["entry"]["logic"] = "Any"
+		value["entry"]["conditions"].append(
+			{"source": "Country Code", "operator": "Equals", "value": "+44"}
+		)
 		script.script_json = json.dumps(value)
 		script.save(ignore_permissions=True)
 		self.assertEqual(script.steps[0].message, "JSON wins")
 		self.assertEqual(script.unmatched_message_policy, "Close")
+		self.assertEqual(script.entry_condition_logic, "Any")
+		self.assertEqual(script.entry_conditions[1].source, "Country Code")
+		self.assertEqual(script.entry_conditions[1].value, "+44")
 
 	def test_option_shape_and_whatsapp_limits_are_validated(self):
 		invalid_options = (

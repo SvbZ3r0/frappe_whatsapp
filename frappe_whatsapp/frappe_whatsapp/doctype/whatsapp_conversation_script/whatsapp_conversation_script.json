@@ -16,8 +16,8 @@
   "availability_mode",
   "available_accounts",
   "entry_section",
-  "entry_match_type",
-  "entry_value",
+  "entry_condition_logic",
+  "entry_conditions",
   "start_step",
   "lifecycle_section",
   "idle_timeout_minutes",
@@ -111,18 +111,20 @@
    "label": "Entry Trigger"
   },
   {
+   "default": "All",
    "depends_on": "eval:doc.authoring_mode=='Structured'",
-   "fieldname": "entry_match_type",
+   "fieldname": "entry_condition_logic",
    "fieldtype": "Select",
-   "label": "Match",
-   "options": "Exact\nContains\nRegex\nContent Type\nAny",
+   "label": "Conditions Match",
+   "options": "All\nAny",
    "reqd": 1
   },
   {
-   "depends_on": "eval:doc.authoring_mode=='Structured' && doc.entry_match_type!='Any'",
-   "fieldname": "entry_value",
-   "fieldtype": "Data",
-   "label": "Value"
+   "depends_on": "eval:doc.authoring_mode=='Structured'",
+   "fieldname": "entry_conditions",
+   "fieldtype": "Table",
+   "label": "Conditions",
+   "options": "WhatsApp Conversation Entry Condition"
   },
   {
    "depends_on": "eval:doc.authoring_mode=='Structured'",

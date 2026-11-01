@@ -28,6 +28,11 @@ TRANSITION_FIELDS = (
 	"priority",
 	"capture_as",
 )
+ENTRY_CONDITION_FIELDS = (
+	"source",
+	"operator",
+	"value",
+)
 LIFECYCLE_FIELDS = (
 	"idle_timeout_minutes",
 	"maximum_lifetime_minutes",
@@ -78,8 +83,15 @@ class WhatsAppConversationScript(Document):
 		return {
 			"version": self.version or 1,
 			"entry": {
-				"match": self.entry_match_type,
-				"value": self.entry_value or "",
+				"logic": self.entry_condition_logic or "All",
+				"conditions": [
+					{
+						"source": condition.source,
+						"operator": condition.operator,
+						"value": condition.value or "",
+					}
+					for condition in self.entry_conditions
+				],
 			},
 			"start_step": self.start_step,
 			"session": {
@@ -119,11 +131,13 @@ class WhatsAppConversationScript(Document):
 	def import_script_json(self):
 		value = self.get_script_json()
 		entry = value.get("entry") or {}
+		conditions = entry.get("conditions")
 		session = value.get("session") or {}
 		steps = value.get("steps")
 		transitions = value.get("transitions")
 		if (
 			not isinstance(entry, dict)
+			or not isinstance(conditions, list)
 			or not isinstance(session, dict)
 			or not isinstance(steps, list)
 			or not isinstance(transitions, list)
@@ -141,8 +155,7 @@ class WhatsAppConversationScript(Document):
 			frappe.throw(_("Conversation Script JSON keywords must be strings"))
 
 		self.version = value.get("version") or 1
-		self.entry_match_type = entry.get("match")
-		self.entry_value = entry.get("value") or ""
+		self.entry_condition_logic = entry.get("logic") or "All"
 		self.start_step = value.get("start_step")
 		self.idle_timeout_minutes = session["idle_timeout_minutes"]
 		self.maximum_lifetime_minutes = session["maximum_lifetime_minutes"]
@@ -150,8 +163,20 @@ class WhatsAppConversationScript(Document):
 		self.restart_keywords = "\n".join(session["restart_keywords"])
 		self.cancel_keywords = "\n".join(session["cancel_keywords"])
 		self.unmatched_message_policy = session.get("unmatched_message_policy") or "Retry"
+		self.set("entry_conditions", [])
 		self.set("steps", [])
 		self.set("transitions", [])
+		for condition in conditions:
+			if not isinstance(condition, dict):
+				frappe.throw(_("Every conversation entry condition must be an object"))
+			self.append(
+				"entry_conditions",
+				{
+					"source": condition.get("source"),
+					"operator": condition.get("operator"),
+					"value": condition.get("value") or "",
+				},
+			)
 		for step in steps:
 			if not isinstance(step, dict):
 				frappe.throw(_("Every conversation step must be an object"))
@@ -207,12 +232,32 @@ class WhatsAppConversationScript(Document):
 			self.script_json = json.dumps(self.generate_script_json(), indent=2)
 
 	def validate_entry_trigger(self):
-		if self.entry_match_type not in ("Exact", "Contains", "Regex", "Content Type", "Any"):
-			frappe.throw(_("Select a valid entry trigger match type"))
-		if self.entry_match_type != "Any" and not self.entry_value:
-			frappe.throw(_("Entry trigger value is required"))
-		if self.entry_match_type == "Regex":
-			validate_regex(self.entry_value, _("Entry trigger"))
+		if self.entry_condition_logic not in ("All", "Any"):
+			frappe.throw(_("Select whether all or any entry conditions must match"))
+		if not self.entry_conditions:
+			frappe.throw(_("Add at least one entry condition"))
+		allowed_operators = {
+			"Message Text": ("Equals", "Contains", "Regex", "Any"),
+			"Content Type": ("Equals", "Any"),
+			"Country Code": ("Equals",),
+		}
+		for condition in self.entry_conditions:
+			if condition.source not in allowed_operators:
+				frappe.throw(_("Select a valid entry condition source"))
+			if condition.operator not in allowed_operators[condition.source]:
+				frappe.throw(
+					_("Operator {0} is not valid for {1}").format(
+						condition.operator, condition.source
+					)
+				)
+			if condition.operator != "Any" and not condition.value:
+				frappe.throw(_("Entry condition value is required"))
+			if condition.operator == "Regex":
+				validate_regex(condition.value, _("Entry condition"))
+			if condition.source == "Country Code" and not re.fullmatch(
+				r"\+?[1-9][0-9]{0,2}", condition.value or ""
+			):
+				frappe.throw(_("Country Code must contain one to three digits, optionally prefixed by +"))
 
 	def validate_lifecycle(self):
 		for fieldname, label in (
@@ -333,8 +378,11 @@ class WhatsAppConversationScript(Document):
 def structured_state(doc):
 	return {
 		"version": doc.get("version"),
-		"entry_match_type": doc.get("entry_match_type"),
-		"entry_value": doc.get("entry_value"),
+		"entry_condition_logic": doc.get("entry_condition_logic"),
+		"entry_conditions": [
+			{fieldname: row.get(fieldname) for fieldname in ENTRY_CONDITION_FIELDS}
+			for row in (doc.get("entry_conditions") or [])
+		],
 		"start_step": doc.get("start_step"),
 		**{fieldname: doc.get(fieldname) for fieldname in LIFECYCLE_FIELDS},
 		"steps": [

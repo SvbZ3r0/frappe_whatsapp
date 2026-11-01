@@ -199,7 +199,7 @@ For `INIT`, `data_exchange`, and `BACK`, the encrypted `flow_token` must match a
 
 ### Scripted conversations
 
-**WhatsApp Conversation Script** provides local, stateful message journeys without publishing an artifact to Meta. Define an entry trigger, ordered steps, and reply transitions using Structured tables or synchronized JSON. Supported steps can send text, buttons/lists, launch a WhatsApp Flow, invoke an allowlisted installed-app action, hand off, or finish.
+**WhatsApp Conversation Script** provides local, stateful message journeys without publishing an artifact to Meta. Define `All` or `Any` entry conditions, ordered steps, and reply transitions using Structured tables or synchronized JSON. Entry conditions can match message text, content type, and the sender's country-code prefix. Supported steps can send text, buttons/lists, launch a WhatsApp Flow, invoke an allowlisted installed-app action, hand off, or finish.
 
 Each active customer journey is persisted as a **WhatsApp Conversation Session**, scoped by WhatsApp Account and phone number. Incoming messages advance the current step after the webhook transaction commits. Exact, contains, regex, content-type, any, and default transitions are supported, with optional context capture and `{{ variable }}` substitution in outgoing text.
 
