@@ -7,13 +7,30 @@ from frappe.model.document import Document
 from frappe.integrations.utils import make_post_request
 
 from frappe_whatsapp.utils import get_whatsapp_account, format_number
+from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_messaging_window.whatsapp_messaging_window import (
+    assert_free_form_message_allowed,
+    record_incoming_message,
+)
 
 class WhatsAppMessage(Document):
     def validate(self):
         self.set_whatsapp_account()
+        if self.flow_cta and len(self.flow_cta) > 20:
+            frappe.throw(_("Flow Call to Action cannot exceed 20 characters"))
 
     def on_update(self):
         self.update_profile_name()
+
+    def after_insert(self):
+        """Update transport state without coupling it to an automation engine."""
+        if self.type == "Incoming":
+            record_incoming_message(self)
+        elif self.type == "Outgoing" and self.content_type == "flow":
+            from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_flow_session.whatsapp_flow_session import (
+                ensure_flow_session_for_launch,
+            )
+
+            ensure_flow_session_for_launch(self)
 
     def update_profile_name(self):
         number = self.get("from")
@@ -108,6 +125,10 @@ class WhatsAppMessage(Document):
             return
 
         if self.message_type != "Template":
+            # Meta permits free-form, interactive and Flow messages only during
+            # the 24 hours following the customer's latest inbound message.
+            # Check at actual delivery time so queued messages cannot go stale.
+            assert_free_form_message_allowed(self.whatsapp_account, self.to)
             if self.attach and not self.attach.startswith("http"):
                 link = frappe.utils.get_url() + "/" + self.attach
             else:

@@ -20,6 +20,14 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_flow_exchange.whatsapp_flow_exchange import (
+	FlowExchangeInProgressError,
+	FlowExchangeReplayUnavailableError,
+	begin_exchange,
+	complete_exchange,
+	fail_exchange,
+)
+
 
 class FlowProtocolError(Exception):
 	"""The request does not satisfy the WhatsApp Flow protocol."""
@@ -75,10 +83,28 @@ def handle_flow_request(flow=None, whatsapp_account=None):
 			diagnostics["flow"] = flow_doc.name
 		validate_data_api_version(decrypted, flow_doc)
 		context = normalize_context(decrypted, flow_doc, account)
-		ordinary_response = dispatch_data_exchange(context, flow_doc)
-		ordinary_response = format_protocol_response(
-			ordinary_response, decrypted, flow_doc
-		)
+		if context["action"] == "ping":
+			ordinary_response = dispatch_data_exchange(context, flow_doc)
+			ordinary_response = format_protocol_response(
+				ordinary_response, decrypted, flow_doc
+			)
+		else:
+			request_fingerprint = hashlib.sha256(raw_body).hexdigest()
+			session, exchange, cached_response = begin_exchange(
+				context, flow_doc, request_fingerprint
+			)
+			if cached_response is not None:
+				ordinary_response = cached_response
+			else:
+				try:
+					ordinary_response = dispatch_data_exchange(context, flow_doc)
+					ordinary_response = format_protocol_response(
+						ordinary_response, decrypted, flow_doc
+					)
+					complete_exchange(session, exchange, ordinary_response)
+				except Exception as exc:
+					fail_exchange(session, exchange, exc)
+					raise
 		encrypted_response = encrypt_response(
 			ordinary_response, aes_key, initial_vector
 		)
@@ -92,6 +118,12 @@ def handle_flow_request(flow=None, whatsapp_account=None):
 	except FlowDecryptionError as exc:
 		log_protocol_error(exc, "WhatsApp Flow Decryption Error", diagnostics)
 		return Response("", status=421, content_type="text/plain")
+	except FlowExchangeInProgressError as exc:
+		log_protocol_error(exc, "WhatsApp Flow Exchange In Progress", diagnostics)
+		return Response("", status=409, content_type="text/plain")
+	except FlowExchangeReplayUnavailableError as exc:
+		log_protocol_error(exc, "WhatsApp Flow Exchange Replay Blocked", diagnostics)
+		return Response("", status=409, content_type="text/plain")
 	except FlowProtocolError as exc:
 		log_protocol_error(exc, "WhatsApp Flow Protocol Error", diagnostics)
 		return Response("", status=400, content_type="text/plain")

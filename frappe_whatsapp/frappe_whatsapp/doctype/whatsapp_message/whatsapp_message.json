@@ -21,6 +21,7 @@
   "message",
   "message_type",
   "message_id",
+  "message_timestamp",
   "conversation_id",
   "content_type",
   "attach",
@@ -132,6 +133,13 @@
    "fieldname": "message_id",
    "fieldtype": "Data",
    "label": "Message ID",
+   "read_only": 1
+  },
+  {
+   "description": "Timestamp supplied by WhatsApp for an incoming message",
+   "fieldname": "message_timestamp",
+   "fieldtype": "Datetime",
+   "label": "WhatsApp Message Timestamp",
    "read_only": 1
   },
   {

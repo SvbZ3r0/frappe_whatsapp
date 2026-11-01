@@ -121,7 +121,9 @@ app_include_js = "/assets/frappe_whatsapp/js/frappe_whatsapp.js"
 scheduler_events = {
     "all": [
         "frappe_whatsapp.utils.trigger_whatsapp_notifications_all",
-        "frappe_whatsapp.utils.bulk_messaging.process_scheduled_bulk_messages"
+        "frappe_whatsapp.utils.bulk_messaging.process_scheduled_bulk_messages",
+        "frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_flow_exchange.whatsapp_flow_exchange.purge_expired_exchange_responses",
+        "frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_messaging_window.whatsapp_messaging_window.close_expired_messaging_windows"
     ],
     "hourly": [
         "frappe_whatsapp.utils.trigger_whatsapp_notifications_hourly"
