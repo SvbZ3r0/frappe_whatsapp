@@ -232,7 +232,7 @@ class TestWhatsAppMessage(IntegrationTestCase):
         doc = frappe.get_doc({
             "doctype": "WhatsApp Message",
             "type": "Outgoing",
-            "to": "+919900112256",
+            "to": "+15555550100",
             "message": "Test plus strip",
             "message_type": "Manual",
             "content_type": "text",
@@ -242,7 +242,7 @@ class TestWhatsAppMessage(IntegrationTestCase):
 
         call_args = mock_post.call_args
         sent_data = json.loads(call_args.kwargs.get("data", call_args[1].get("data", "")))
-        self.assertEqual(sent_data["to"], "919900112256")
+        self.assertEqual(sent_data["to"], "15555550100")
 
     @patch("frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_message.whatsapp_message.make_post_request")
     def test_outgoing_reply_message(self, mock_post):
