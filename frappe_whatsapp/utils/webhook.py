@@ -303,7 +303,8 @@ def get_message_timestamp(message):
 		utc_time = datetime.fromtimestamp(int(value), tz=timezone.utc).replace(tzinfo=None)
 	except (TypeError, ValueError, OverflowError):
 		return None
-	return frappe.utils.convert_utc_to_system_timezone(utc_time)
+	system_time = frappe.utils.convert_utc_to_system_timezone(utc_time)
+	return system_time.replace(tzinfo=None)
 
 
 def get_outgoing_flow_message(flow_token, whatsapp_account):

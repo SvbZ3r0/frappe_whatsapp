@@ -2,12 +2,14 @@
 # See license.txt
 
 import json
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock, PropertyMock
 
 import frappe
 from frappe_whatsapp.testing import IntegrationTestCase
 
 from frappe_whatsapp.utils.webhook import (
+    get_message_timestamp,
     update_message_status,
     update_status,
     update_template_status,
@@ -47,6 +49,24 @@ class TestWebhookHelpers(IntegrationTestCase):
         # Set password within each test's transaction scope
         from frappe.utils.password import set_encrypted_password
         set_encrypted_password("WhatsApp Account", "Test WA Webhook Account", "test_webhook_token", "token")
+
+    @patch("frappe_whatsapp.utils.webhook.frappe.utils.convert_utc_to_system_timezone")
+    def test_message_timestamp_is_naive_system_datetime(self, convert_timezone):
+        aware_system_time = datetime(
+            2026,
+            11,
+            3,
+            21,
+            42,
+            20,
+            tzinfo=timezone(timedelta(hours=5, minutes=30)),
+        )
+        convert_timezone.return_value = aware_system_time
+
+        value = get_message_timestamp({"timestamp": "1793722340"})
+
+        self.assertEqual(value, aware_system_time.replace(tzinfo=None))
+        self.assertIsNone(value.tzinfo)
 
     def tearDown(self):
         for name in frappe.get_all("WhatsApp Message", filters={"message_id": ["like", "wamid.webhook_%"]}, pluck="name"):
